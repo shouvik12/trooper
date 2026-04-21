@@ -19,6 +19,36 @@ Trooper is a **zero-code-change drop-in** — just point your base URL at troope
 
 ---
 
+## Demo
+
+Start trooper and watch the fallback happen in real time:
+
+```
+2026/04/21 08:24:10 🪖  Trooper proxy starting on http://localhost:3000
+2026/04/21 08:24:10     Primary  : https://api.anthropic.com/v1/messages
+2026/04/21 08:24:10     Fallback : http://localhost:11434/api/chat (qwen2.5:3b)
+2026/04/21 08:24:48 📥 POST /v1/messages (stream=false)
+2026/04/21 08:24:50 ⚠️  Primary 400 — falling back to local model
+2026/04/21 08:24:50 🪖  Routing to local model: qwen2.5:3b
+```
+
+Full conversation context preserved — Ollama picks up exactly where Claude left off:
+
+```json
+{
+  "content": [{
+    "text": "You just told me that your favorite food is pizza.",
+    "type": "text"
+  }],
+  "model": "qwen2.5:3b",
+  "id": "trooper-fallback"
+}
+```
+
+The app never knew Claude went down. 🪖
+
+---
+
 ## Quickstart
 
 ### Docker (recommended)
