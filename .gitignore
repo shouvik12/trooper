@@ -1,0 +1,14 @@
+# Binary
+trooper
+
+# Environment
+.env
+
+# Go
+*.test
+*.out
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
