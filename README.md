@@ -206,7 +206,7 @@ Fallback responses include `X-Trooper-Fallback: <model>` header so you can detec
 - [ ] Multiple fallback models with priority order
 - [ ] Web UI for live routing visibility
 - [ ] LM Studio support
-
+- [ ] MCP Server Integration**: Enable native Model Context Protocol support to connect Claude AI directly to your agentic workflows.
 ---
 
 ## License
