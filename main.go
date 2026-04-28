@@ -33,7 +33,7 @@ func main() {
 type Config struct {
 	PrimaryURL        string
 	PrimaryAPIKey     string
-	PrimaryAuthHeader string // "x-api-key" for Claude, "Authorization" for OpenAI/others
+	PrimaryAuthHeader string
 	FallbackURL       string
 	FallbackModel     string
 	QuotaStatusCodes  map[int]bool
@@ -62,6 +62,8 @@ func loadConfig() Config {
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 func makeHandler(cfg Config) http.HandlerFunc {
+	store := NewSessionStore()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		if cfg.PrimaryAPIKey == "" {
 			http.Error(w, `{"error":"PRIMARY_API_KEY not set"}`, http.StatusInternalServerError)
@@ -78,7 +80,19 @@ func makeHandler(cfg Config) http.HandlerFunc {
 		json.Unmarshal(body, &reqMap)
 		wantsStream, _ := reqMap["stream"].(bool)
 
-		log.Printf("📥 %s %s (stream=%v)", r.Method, r.URL.Path, wantsStream)
+		// Extract or generate session ID
+		sessionID := r.Header.Get("X-Session-ID")
+		if sessionID == "" {
+			sessionID = "default"
+		}
+
+		// Extract messages and store in session
+		messages, err := extractMessages(body)
+		if err == nil {
+			store.Append(sessionID, messages)
+		}
+
+		log.Printf("📥 %s %s (stream=%v, session=%s)", r.Method, r.URL.Path, wantsStream, sessionID)
 
 		// 1. Try primary
 		primaryResp, err := callPrimary(body, r, cfg)
@@ -125,6 +139,7 @@ func makeHandler(cfg Config) http.HandlerFunc {
 					w.Write(bodyBytes)
 					return
 				}
+
 			case cfg.QuotaStatusCodes[primaryResp.StatusCode]:
 				log.Printf("⚠️  Primary %d — falling back to local model", primaryResp.StatusCode)
 				io.Copy(io.Discard, primaryResp.Body)
@@ -139,13 +154,14 @@ func makeHandler(cfg Config) http.HandlerFunc {
 			log.Printf("⚠️  Primary network error: %v — falling back", err)
 		}
 
-		// 2. Fallback to local model
+		// 2. Fallback to local model with session history
 		log.Printf("🪖  Routing to local model: %s", cfg.FallbackModel)
+		history := store.Get(sessionID)
 
 		if wantsStream {
-			streamFallback(w, body, cfg)
+			streamFallback(w, body, cfg, history)
 		} else {
-			fallbackResp, err := callFallback(body, cfg)
+			fallbackResp, err := callFallback(body, cfg, history)
 			if err != nil {
 				log.Printf("❌ Fallback error: %v", err)
 				http.Error(w, `{"error":"both primary and local model failed"}`, http.StatusBadGateway)
@@ -185,10 +201,14 @@ func callPrimary(body []byte, r *http.Request, cfg Config) (*http.Response, erro
 
 // ── Fallback (Ollama / any local OpenAI-compatible server) ───────────────────
 
-func callFallback(body []byte, cfg Config) ([]byte, error) {
-	messages, err := extractMessages(body)
-	if err != nil {
-		return nil, fmt.Errorf("extracting messages: %w", err)
+func callFallback(body []byte, cfg Config, history []map[string]string) ([]byte, error) {
+	messages := history
+	if len(messages) == 0 {
+		var err error
+		messages, err = extractMessages(body)
+		if err != nil {
+			return nil, fmt.Errorf("extracting messages: %w", err)
+		}
 	}
 
 	ollamaReq := map[string]interface{}{
@@ -215,11 +235,15 @@ func callFallback(body []byte, cfg Config) ([]byte, error) {
 	return wrapAsOpenAI(text, cfg.FallbackModel), nil
 }
 
-func streamFallback(w http.ResponseWriter, body []byte, cfg Config) {
-	messages, err := extractMessages(body)
-	if err != nil {
-		http.Error(w, `{"error":"failed to parse messages"}`, http.StatusBadRequest)
-		return
+func streamFallback(w http.ResponseWriter, body []byte, cfg Config, history []map[string]string) {
+	messages := history
+	if len(messages) == 0 {
+		var err error
+		messages, err = extractMessages(body)
+		if err != nil {
+			http.Error(w, `{"error":"failed to parse messages"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
 	ollamaReq := map[string]interface{}{
@@ -281,13 +305,11 @@ func streamFallback(w http.ResponseWriter, body []byte, cfg Config) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func extractFallbackText(parsed map[string]interface{}) string {
-	// Ollama /api/chat shape
 	if msg, ok := parsed["message"].(map[string]interface{}); ok {
 		if text, ok := msg["content"].(string); ok {
 			return text
 		}
 	}
-	// Ollama /api/generate shape
 	if text, ok := parsed["response"].(string); ok {
 		return text
 	}
@@ -343,14 +365,11 @@ func extractContent(content interface{}) string {
 	return ""
 }
 
-// wrapAsOpenAI wraps text in a response envelope compatible with both
-// OpenAI and Claude SDK callers.
 func wrapAsOpenAI(text string, model string) []byte {
 	resp := map[string]interface{}{
 		"id":     "trooper-fallback",
 		"object": "chat.completion",
 		"model":  model,
-		// OpenAI-compatible shape
 		"choices": []map[string]interface{}{
 			{
 				"index":         0,
@@ -358,7 +377,6 @@ func wrapAsOpenAI(text string, model string) []byte {
 				"finish_reason": "stop",
 			},
 		},
-		// Claude-compatible shape (for anthropic SDK callers)
 		"type": "message",
 		"role": "assistant",
 		"content": []map[string]string{
