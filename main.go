@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -81,7 +82,6 @@ func makeHandler(cfg Config) http.HandlerFunc {
 
 		// 1. Try primary
 		primaryResp, err := callPrimary(body, r, cfg)
-
 		if err == nil {
 			switch {
 			case primaryResp.StatusCode == http.StatusOK:
@@ -94,6 +94,37 @@ func makeHandler(cfg Config) http.HandlerFunc {
 				copyResponse(w, primaryResp)
 				return
 
+			case primaryResp.StatusCode == 429:
+				log.Printf("⚠️  Primary 429 — rate limited, retrying with backoff")
+				io.Copy(io.Discard, primaryResp.Body)
+				primaryResp.Body.Close()
+				time.Sleep(2 * time.Second)
+				primaryResp, err = callPrimary(body, r, cfg)
+				if err == nil && primaryResp.StatusCode == http.StatusOK {
+					log.Printf("✅ Primary recovered after backoff")
+					copyResponse(w, primaryResp)
+					return
+				}
+				log.Printf("⚠️  Primary still failing after backoff — falling back")
+				io.Copy(io.Discard, primaryResp.Body)
+				primaryResp.Body.Close()
+
+			case primaryResp.StatusCode == 402:
+				log.Printf("⚠️  Primary 402 — credits gone, falling back immediately")
+				io.Copy(io.Discard, primaryResp.Body)
+				primaryResp.Body.Close()
+
+			case primaryResp.StatusCode == 400:
+				bodyBytes, _ := io.ReadAll(primaryResp.Body)
+				primaryResp.Body.Close()
+				if strings.Contains(string(bodyBytes), "credit balance") {
+					log.Printf("⚠️  Primary 400 — credit balance too low, falling back immediately")
+				} else {
+					log.Printf("❌ Primary 400 — bad request, not falling back")
+					w.WriteHeader(400)
+					w.Write(bodyBytes)
+					return
+				}
 			case cfg.QuotaStatusCodes[primaryResp.StatusCode]:
 				log.Printf("⚠️  Primary %d — falling back to local model", primaryResp.StatusCode)
 				io.Copy(io.Discard, primaryResp.Body)
