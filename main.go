@@ -18,6 +18,8 @@ func main() {
 
 	chain := buildChain()
 	quotaCodes := loadQuotaCodes()
+	active := &ActiveProvider{index: 0}
+	startHealthCheck(chain, active)
 
 	log.Printf("🪖  Trooper proxy starting on http://localhost:%s", port)
 	for i, p := range chain {
@@ -25,7 +27,7 @@ func main() {
 	}
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
 
-	http.HandleFunc("/", makeHandler(chain, quotaCodes))
+	http.HandleFunc("/", makeHandler(chain, quotaCodes, active))
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
@@ -47,7 +49,7 @@ func loadQuotaCodes() map[int]bool {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
+func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvider) http.HandlerFunc {
 	store := NewSessionStore()
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -78,12 +80,12 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 		fallbackCount := 0
 		trigger := ""
 
-		// Try each provider in chain
-		for _, provider := range chain {
+		// Try each provider starting from active index
+		for i := active.Get(); i < len(chain); i++ {
+			provider := chain[i]
 			log.Printf("🔄 Trying provider: %s", provider.Name)
 
 			if provider.Name == "ollama" {
-				// Local fallback
 				log.Printf("🪖  Routing to local model: %s", provider.Model)
 				w.Header().Set("X-Trooper-Provider", "ollama")
 				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
@@ -110,6 +112,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 				log.Printf("⚠️  %s network error: %v — trying next", provider.Name, err)
 				fallbackCount++
 				trigger = "network_error"
+				active.Set(i + 1)
 				continue
 			}
 
@@ -128,6 +131,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "401"
+				active.Set(i + 1)
 				continue
 
 			case resp.StatusCode == 429:
@@ -149,6 +153,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "429"
+				active.Set(i + 1)
 				continue
 
 			case resp.StatusCode == 402:
@@ -157,6 +162,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "402"
+				active.Set(i + 1)
 				continue
 
 			case resp.StatusCode == 400:
@@ -166,6 +172,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 					log.Printf("⚠️  %s 400 — credit balance too low, trying next", provider.Name)
 					fallbackCount++
 					trigger = "credit_balance"
+					active.Set(i + 1)
 					continue
 				}
 				log.Printf("❌ %s 400 — bad request", provider.Name)
@@ -179,6 +186,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 				resp.Body.Close()
 				fallbackCount++
 				trigger = fmt.Sprintf("%d", resp.StatusCode)
+				active.Set(i + 1)
 				continue
 
 			default:

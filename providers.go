@@ -1,6 +1,12 @@
 package main
 
-import "sync"
+import (
+	"bytes"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+)
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
@@ -57,6 +63,62 @@ func buildChain() []Provider {
 	})
 
 	return chain
+}
+
+// ── Active Provider ───────────────────────────────────────────────────────────
+
+type ActiveProvider struct {
+	mu    sync.RWMutex
+	index int
+}
+
+func (a *ActiveProvider) Get() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.index
+}
+
+func (a *ActiveProvider) Set(index int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.index = index
+}
+
+func startHealthCheck(chain []Provider, active *ActiveProvider) {
+	if getEnv("AUTO_RECOVERY", "false") != "true" {
+		log.Printf("🏥 Auto recovery disabled — set AUTO_RECOVERY=true to enable")
+		return
+	}
+
+	go func() {
+		log.Printf("🏥 Auto recovery enabled — checking every 60 seconds")
+		for {
+			time.Sleep(60 * time.Second)
+			log.Printf("🏥 Health check running...")
+			for i, p := range chain {
+				if p.Name == "ollama" {
+					continue
+				}
+				if p.APIKey == "" {
+					continue
+				}
+				body := `{"model":"` + p.Model + `","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`
+				resp, err := http.Post(p.URL, "application/json", bytes.NewBufferString(body))
+				if err != nil {
+					continue
+				}
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					current := active.Get()
+					if i < current {
+						log.Printf("🔄 Auto recovery — switching back to %s", p.Name)
+						active.Set(i)
+					}
+					break
+				}
+			}
+		}
+	}()
 }
 
 // ── Session Store ─────────────────────────────────────────────────────────────
