@@ -16,13 +16,16 @@ import (
 func main() {
 	port := getEnv("TROOPER_PORT", "3000")
 
-	cfg := loadConfig()
-	log.Printf("🪖  Trooper proxy starting on http://localhost:%s", port)
-	log.Printf("    Primary  : %s", cfg.PrimaryURL)
-	log.Printf("    Fallback : %s (%s)", cfg.FallbackURL, cfg.FallbackModel)
-	log.Printf("    Triggers : HTTP %v", cfg.QuotaStatusCodes)
+	chain := buildChain()
+	quotaCodes := loadQuotaCodes()
 
-	http.HandleFunc("/", makeHandler(cfg))
+	log.Printf("🪖  Trooper proxy starting on http://localhost:%s", port)
+	for i, p := range chain {
+		log.Printf("    Provider %d: %s", i+1, p.Name)
+	}
+	log.Printf("    Triggers : HTTP %v", quotaCodes)
+
+	http.HandleFunc("/", makeHandler(chain, quotaCodes))
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
@@ -30,16 +33,7 @@ func main() {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-type Config struct {
-	PrimaryURL        string
-	PrimaryAPIKey     string
-	PrimaryAuthHeader string
-	FallbackURL       string
-	FallbackModel     string
-	QuotaStatusCodes  map[int]bool
-}
-
-func loadConfig() Config {
+func loadQuotaCodes() map[int]bool {
 	quotaCodes := map[int]bool{}
 	raw := getEnv("QUOTA_STATUS_CODES", "429,402,529,400")
 	for _, s := range strings.Split(raw, ",") {
@@ -48,28 +42,15 @@ func loadConfig() Config {
 			quotaCodes[code] = true
 		}
 	}
-
-	return Config{
-		PrimaryURL:        getEnv("PRIMARY_URL", "https://api.anthropic.com/v1/messages"),
-		PrimaryAPIKey:     getEnv("PRIMARY_API_KEY", os.Getenv("ANTHROPIC_API_KEY")),
-		PrimaryAuthHeader: getEnv("PRIMARY_AUTH_HEADER", "x-api-key"),
-		FallbackURL:       getEnv("FALLBACK_URL", "http://localhost:11434/api/chat"),
-		FallbackModel:     getEnv("FALLBACK_MODEL", getEnv("OLLAMA_MODEL", "qwen2.5:3b")),
-		QuotaStatusCodes:  quotaCodes,
-	}
+	return quotaCodes
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-func makeHandler(cfg Config) http.HandlerFunc {
+func makeHandler(chain []Provider, quotaCodes map[int]bool) http.HandlerFunc {
 	store := NewSessionStore()
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		if cfg.PrimaryAPIKey == "" {
-			http.Error(w, `{"error":"PRIMARY_API_KEY not set"}`, http.StatusInternalServerError)
-			return
-		}
-
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, `{"error":"failed to read request"}`, http.StatusBadRequest)
@@ -80,13 +61,12 @@ func makeHandler(cfg Config) http.HandlerFunc {
 		json.Unmarshal(body, &reqMap)
 		wantsStream, _ := reqMap["stream"].(bool)
 
-		// Extract or generate session ID
+		// Session handling
 		sessionID := r.Header.Get("X-Session-ID")
 		if sessionID == "" {
 			sessionID = "default"
 		}
 
-		// Extract messages and store in session
 		messages, err := extractMessages(body)
 		if err == nil {
 			store.Append(sessionID, messages)
@@ -94,114 +74,157 @@ func makeHandler(cfg Config) http.HandlerFunc {
 
 		log.Printf("📥 %s %s (stream=%v, session=%s)", r.Method, r.URL.Path, wantsStream, sessionID)
 
-		// 1. Try primary
-		primaryResp, err := callPrimary(body, r, cfg)
-		if err == nil {
-			switch {
-			case primaryResp.StatusCode == http.StatusOK:
-				log.Printf("✅ Primary responded OK")
-				copyResponse(w, primaryResp)
-				return
+		history := store.Get(sessionID)
+		fallbackCount := 0
+		trigger := ""
 
-			case primaryResp.StatusCode == http.StatusUnauthorized:
-				log.Printf("❌ Primary 401 — bad API key, not falling back")
-				copyResponse(w, primaryResp)
-				return
+		// Try each provider in chain
+		for _, provider := range chain {
+			log.Printf("🔄 Trying provider: %s", provider.Name)
 
-			case primaryResp.StatusCode == 429:
-				log.Printf("⚠️  Primary 429 — rate limited, retrying with backoff")
-				io.Copy(io.Discard, primaryResp.Body)
-				primaryResp.Body.Close()
-				time.Sleep(2 * time.Second)
-				primaryResp, err = callPrimary(body, r, cfg)
-				if err == nil && primaryResp.StatusCode == http.StatusOK {
-					log.Printf("✅ Primary recovered after backoff")
-					copyResponse(w, primaryResp)
-					return
-				}
-				log.Printf("⚠️  Primary still failing after backoff — falling back")
-				io.Copy(io.Discard, primaryResp.Body)
-				primaryResp.Body.Close()
+			if provider.Name == "ollama" {
+				// Local fallback
+				log.Printf("🪖  Routing to local model: %s", provider.Model)
+				w.Header().Set("X-Trooper-Provider", "ollama")
+				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
+				w.Header().Set("X-Trooper-Trigger", trigger)
 
-			case primaryResp.StatusCode == 402:
-				log.Printf("⚠️  Primary 402 — credits gone, falling back immediately")
-				io.Copy(io.Discard, primaryResp.Body)
-				primaryResp.Body.Close()
-
-			case primaryResp.StatusCode == 400:
-				bodyBytes, _ := io.ReadAll(primaryResp.Body)
-				primaryResp.Body.Close()
-				if strings.Contains(string(bodyBytes), "credit balance") {
-					log.Printf("⚠️  Primary 400 — credit balance too low, falling back immediately")
+				if wantsStream {
+					streamFallback(w, body, provider, history)
 				} else {
-					log.Printf("❌ Primary 400 — bad request, not falling back")
-					w.WriteHeader(400)
-					w.Write(bodyBytes)
+					fallbackResp, err := callFallback(body, provider, history)
+					if err != nil {
+						log.Printf("❌ Ollama error: %v", err)
+						http.Error(w, `{"error":"all providers failed"}`, http.StatusBadGateway)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.Write(fallbackResp)
+				}
+				return
+			}
+
+			// Try cloud provider
+			resp, err := callProvider(body, r, provider)
+			if err != nil {
+				log.Printf("⚠️  %s network error: %v — trying next", provider.Name, err)
+				fallbackCount++
+				trigger = "network_error"
+				continue
+			}
+
+			switch {
+			case resp.StatusCode == http.StatusOK:
+				log.Printf("✅ %s responded OK", provider.Name)
+				w.Header().Set("X-Trooper-Provider", provider.Name)
+				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
+				w.Header().Set("X-Trooper-Trigger", trigger)
+				copyResponse(w, resp)
+				return
+
+			case resp.StatusCode == http.StatusUnauthorized:
+				log.Printf("❌ %s 401 — bad API key", provider.Name)
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				fallbackCount++
+				trigger = "401"
+				continue
+
+			case resp.StatusCode == 429:
+				log.Printf("⚠️  %s 429 — rate limited, retrying with backoff", provider.Name)
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				time.Sleep(2 * time.Second)
+				resp, err = callProvider(body, r, provider)
+				if err == nil && resp.StatusCode == http.StatusOK {
+					log.Printf("✅ %s recovered after backoff", provider.Name)
+					w.Header().Set("X-Trooper-Provider", provider.Name)
+					w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
+					w.Header().Set("X-Trooper-Trigger", "429_recovered")
+					copyResponse(w, resp)
 					return
 				}
+				log.Printf("⚠️  %s still failing after backoff — trying next", provider.Name)
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				fallbackCount++
+				trigger = "429"
+				continue
 
-			case cfg.QuotaStatusCodes[primaryResp.StatusCode]:
-				log.Printf("⚠️  Primary %d — falling back to local model", primaryResp.StatusCode)
-				io.Copy(io.Discard, primaryResp.Body)
-				primaryResp.Body.Close()
+			case resp.StatusCode == 402:
+				log.Printf("⚠️  %s 402 — credits gone, trying next", provider.Name)
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				fallbackCount++
+				trigger = "402"
+				continue
+
+			case resp.StatusCode == 400:
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if strings.Contains(string(bodyBytes), "credit balance") {
+					log.Printf("⚠️  %s 400 — credit balance too low, trying next", provider.Name)
+					fallbackCount++
+					trigger = "credit_balance"
+					continue
+				}
+				log.Printf("❌ %s 400 — bad request", provider.Name)
+				w.WriteHeader(400)
+				w.Write(bodyBytes)
+				return
+
+			case quotaCodes[resp.StatusCode]:
+				log.Printf("⚠️  %s %d — quota hit, trying next", provider.Name, resp.StatusCode)
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				fallbackCount++
+				trigger = fmt.Sprintf("%d", resp.StatusCode)
+				continue
 
 			default:
-				log.Printf("❌ Primary %d — non-recoverable", primaryResp.StatusCode)
-				copyResponse(w, primaryResp)
+				log.Printf("❌ %s %d — non-recoverable", provider.Name, resp.StatusCode)
+				copyResponse(w, resp)
 				return
 			}
-		} else {
-			log.Printf("⚠️  Primary network error: %v — falling back", err)
 		}
 
-		// 2. Fallback to local model with session history
-		log.Printf("🪖  Routing to local model: %s", cfg.FallbackModel)
-		history := store.Get(sessionID)
-
-		if wantsStream {
-			streamFallback(w, body, cfg, history)
-		} else {
-			fallbackResp, err := callFallback(body, cfg, history)
-			if err != nil {
-				log.Printf("❌ Fallback error: %v", err)
-				http.Error(w, `{"error":"both primary and local model failed"}`, http.StatusBadGateway)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Trooper-Fallback", cfg.FallbackModel)
-			w.Write(fallbackResp)
-		}
+		http.Error(w, `{"error":"all providers failed"}`, http.StatusBadGateway)
 	}
 }
 
-// ── Primary ───────────────────────────────────────────────────────────────────
+// ── Provider Call ─────────────────────────────────────────────────────────────
 
-func callPrimary(body []byte, r *http.Request, cfg Config) (*http.Response, error) {
-	req, err := http.NewRequest("POST", cfg.PrimaryURL, bytes.NewBuffer(body))
+func callProvider(body []byte, r *http.Request, p Provider) (*http.Response, error) {
+	var reqMap map[string]interface{}
+	json.Unmarshal(body, &reqMap)
+	if p.Model != "" {
+		reqMap["model"] = p.Model
+	}
+	newBody, _ := json.Marshal(reqMap)
+
+	req, err := http.NewRequest("POST", p.URL, bytes.NewBuffer(newBody))
 	if err != nil {
 		return nil, err
 	}
 
-	for k, v := range r.Header {
-		req.Header[k] = v
+	req.Header.Set("Content-Type", "application/json")
+
+	if strings.ToLower(p.AuthHeader) == "authorization" {
+		req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	} else if p.AuthHeader != "" {
+		req.Header.Set(p.AuthHeader, p.APIKey)
 	}
 
-	if strings.ToLower(cfg.PrimaryAuthHeader) == "authorization" {
-		req.Header.Set("Authorization", "Bearer "+cfg.PrimaryAPIKey)
-	} else {
-		req.Header.Set(cfg.PrimaryAuthHeader, cfg.PrimaryAPIKey)
-	}
-
-	if strings.Contains(cfg.PrimaryURL, "anthropic.com") {
+	if p.Name == "claude" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 
 	return http.DefaultClient.Do(req)
 }
 
-// ── Fallback (Ollama / any local OpenAI-compatible server) ───────────────────
+// ── Fallback (Ollama) ─────────────────────────────────────────────────────────
 
-func callFallback(body []byte, cfg Config, history []map[string]string) ([]byte, error) {
+func callFallback(body []byte, p Provider, history []map[string]string) ([]byte, error) {
 	messages := history
 	if len(messages) == 0 {
 		var err error
@@ -212,15 +235,15 @@ func callFallback(body []byte, cfg Config, history []map[string]string) ([]byte,
 	}
 
 	ollamaReq := map[string]interface{}{
-		"model":    cfg.FallbackModel,
+		"model":    p.Model,
 		"messages": messages,
 		"stream":   false,
 	}
 	reqBytes, _ := json.Marshal(ollamaReq)
 
-	resp, err := http.Post(cfg.FallbackURL, "application/json", bytes.NewBuffer(reqBytes))
+	resp, err := http.Post(p.URL, "application/json", bytes.NewBuffer(reqBytes))
 	if err != nil {
-		return nil, fmt.Errorf("fallback unreachable at %s: %w", cfg.FallbackURL, err)
+		return nil, fmt.Errorf("ollama unreachable at %s: %w", p.URL, err)
 	}
 	defer resp.Body.Close()
 
@@ -228,14 +251,14 @@ func callFallback(body []byte, cfg Config, history []map[string]string) ([]byte,
 
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("fallback response parse error: %w", err)
+		return nil, fmt.Errorf("ollama response parse error: %w", err)
 	}
 
 	text := extractFallbackText(parsed)
-	return wrapAsOpenAI(text, cfg.FallbackModel), nil
+	return wrapAsOpenAI(text, p.Model), nil
 }
 
-func streamFallback(w http.ResponseWriter, body []byte, cfg Config, history []map[string]string) {
+func streamFallback(w http.ResponseWriter, body []byte, p Provider, history []map[string]string) {
 	messages := history
 	if len(messages) == 0 {
 		var err error
@@ -247,21 +270,21 @@ func streamFallback(w http.ResponseWriter, body []byte, cfg Config, history []ma
 	}
 
 	ollamaReq := map[string]interface{}{
-		"model":    cfg.FallbackModel,
+		"model":    p.Model,
 		"messages": messages,
 		"stream":   true,
 	}
 	reqBytes, _ := json.Marshal(ollamaReq)
 
-	resp, err := http.Post(cfg.FallbackURL, "application/json", bytes.NewBuffer(reqBytes))
+	resp, err := http.Post(p.URL, "application/json", bytes.NewBuffer(reqBytes))
 	if err != nil {
-		http.Error(w, `{"error":"fallback unreachable"}`, http.StatusBadGateway)
+		http.Error(w, `{"error":"ollama unreachable"}`, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("X-Trooper-Fallback", cfg.FallbackModel)
+	w.Header().Set("X-Trooper-Fallback", p.Model)
 
 	flusher, canFlush := w.(http.Flusher)
 	decoder := json.NewDecoder(resp.Body)

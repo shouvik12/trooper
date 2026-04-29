@@ -2,6 +2,65 @@ package main
 
 import "sync"
 
+// ── Provider ──────────────────────────────────────────────────────────────────
+
+type Provider struct {
+	Name       string
+	URL        string
+	APIKey     string
+	AuthHeader string
+	Model      string
+}
+
+// ── Smart Chain ───────────────────────────────────────────────────────────────
+
+func buildChain() []Provider {
+	chain := []Provider{}
+
+	// Claude — primary
+	if key := getEnv("CLAUDE_API_KEY", getEnv("PRIMARY_API_KEY", "")); key != "" {
+		chain = append(chain, Provider{
+			Name:       "claude",
+			URL:        getEnv("CLAUDE_URL", "https://api.anthropic.com/v1/messages"),
+			APIKey:     key,
+			AuthHeader: "x-api-key",
+		})
+	}
+
+	// Gemini — optional cloud fallback, user opt-in
+	if key := getEnv("GEMINI_API_KEY", ""); key != "" {
+		chain = append(chain, Provider{
+			Name:       "gemini",
+			URL:        getEnv("GEMINI_URL", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+			APIKey:     key,
+			AuthHeader: "Authorization",
+			Model:      getEnv("GEMINI_MODEL", "gemini-2.0-flash"),
+		})
+	}
+
+	// OpenAI — optional cloud fallback, user opt-in
+	if key := getEnv("OPENAI_API_KEY", ""); key != "" {
+		chain = append(chain, Provider{
+			Name:       "openai",
+			URL:        getEnv("OPENAI_URL", "https://api.openai.com/v1/chat/completions"),
+			APIKey:     key,
+			AuthHeader: "Authorization",
+			Model:      getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		})
+	}
+
+	// Ollama — always last, always local, privacy safety net
+	chain = append(chain, Provider{
+		Name:  "ollama",
+		URL:   getEnv("FALLBACK_URL", "http://localhost:11434/api/chat"),
+		Model: getEnv("OLLAMA_MODEL", "qwen2.5:3b"),
+	})
+
+	return chain
+}
+
+// ── Session Store ─────────────────────────────────────────────────────────────
+
 type SessionStore struct {
 	mu       sync.Mutex
 	sessions map[string][]map[string]string
