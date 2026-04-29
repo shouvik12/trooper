@@ -21,6 +21,18 @@ func main() {
 	active := &ActiveProvider{index: 0}
 	startHealthCheck(chain, active)
 
+	// Warn if no cloud provider configured
+	hasCloud := false
+	for _, p := range chain {
+		if p.Name != "ollama" {
+			hasCloud = true
+			break
+		}
+	}
+	if !hasCloud {
+		log.Printf("⚠️  No cloud providers configured — set at least one of: CLAUDE_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY")
+		log.Printf("    Trooper needs a cloud provider to fall back from.")
+	}
 	log.Printf("🪖  Trooper proxy starting on http://localhost:%s", port)
 	for i, p := range chain {
 		log.Printf("    Provider %d: %s", i+1, p.Name)
@@ -66,9 +78,8 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		// Session handling
 		sessionID := r.Header.Get("X-Session-ID")
 		if sessionID == "" {
-			sessionID = "default"
+			sessionID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
 		}
-
 		messages, err := extractMessages(body)
 		if err == nil {
 			store.Append(sessionID, messages)
@@ -226,8 +237,8 @@ func callProvider(body []byte, r *http.Request, p Provider) (*http.Response, err
 	if p.Name == "claude" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
-
-	return http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	return client.Do(req)
 }
 
 // ── Fallback (Ollama) ─────────────────────────────────────────────────────────
