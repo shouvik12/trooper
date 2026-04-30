@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -102,8 +103,22 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 				if p.APIKey == "" {
 					continue
 				}
-				body := `{"model":"` + p.Model + `","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`
-				resp, err := http.Post(p.URL, "application/json", bytes.NewBufferString(body))
+				body := `{"model":"` + p.Model + `","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+				req, err := http.NewRequest("POST", p.URL, bytes.NewBufferString(body))
+				if err != nil {
+					continue
+				}
+				req.Header.Set("Content-Type", "application/json")
+				if strings.ToLower(p.AuthHeader) == "authorization" {
+					req.Header.Set("Authorization", "Bearer "+p.APIKey)
+				} else if p.AuthHeader != "" {
+					req.Header.Set(p.AuthHeader, p.APIKey)
+				}
+				if p.Name == "claude" {
+					req.Header.Set("anthropic-version", "2023-06-01")
+				}
+				client := &http.Client{Timeout: 10 * time.Second}
+				resp, err := client.Do(req)
 				if err != nil {
 					continue
 				}
@@ -123,26 +138,53 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 
 // ── Session Store ─────────────────────────────────────────────────────────────
 
+type Session struct {
+	Messages []map[string]string
+	LastSeen time.Time
+}
+
 type SessionStore struct {
 	mu       sync.Mutex
-	sessions map[string][]map[string]string
+	sessions map[string]*Session
 }
 
 func NewSessionStore() *SessionStore {
-	return &SessionStore{
-		sessions: make(map[string][]map[string]string),
+	s := &SessionStore{
+		sessions: make(map[string]*Session),
+	}
+	go s.cleanup()
+	return s
+}
+
+func (s *SessionStore) cleanup() {
+	for {
+		time.Sleep(10 * time.Minute)
+		s.mu.Lock()
+		for id, session := range s.sessions {
+			if time.Since(session.LastSeen) > 24*time.Hour {
+				log.Printf("🧹 Session expired: %s", id)
+				delete(s.sessions, id)
+			}
+		}
+		s.mu.Unlock()
 	}
 }
 
 func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	existing := s.sessions[sessionID]
-	s.sessions[sessionID] = append(existing, messages...)
+	if _, ok := s.sessions[sessionID]; !ok {
+		s.sessions[sessionID] = &Session{}
+	}
+	s.sessions[sessionID].Messages = append(s.sessions[sessionID].Messages, messages...)
+	s.sessions[sessionID].LastSeen = time.Now()
 }
 
 func (s *SessionStore) Get(sessionID string) []map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[sessionID]
+	if session, ok := s.sessions[sessionID]; ok {
+		return session.Messages
+	}
+	return nil
 }
