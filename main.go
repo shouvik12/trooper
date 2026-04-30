@@ -15,6 +15,7 @@ import (
 
 func main() {
 	port := getEnv("TROOPER_PORT", "3000")
+	bindAddr := getEnv("TROOPER_BIND", "127.0.0.1")
 
 	chain := buildChain()
 	quotaCodes := loadQuotaCodes()
@@ -33,14 +34,14 @@ func main() {
 		log.Printf("⚠️  No cloud providers configured — set at least one of: CLAUDE_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY")
 		log.Printf("    Trooper needs a cloud provider to fall back from.")
 	}
-	log.Printf("🪖  Trooper proxy starting on http://localhost:%s", port)
+	log.Printf("🪖  Trooper proxy starting on http://%s:%s", bindAddr, port)
 	for i, p := range chain {
 		log.Printf("    Provider %d: %s", i+1, p.Name)
 	}
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
 
 	http.HandleFunc("/", makeHandler(chain, quotaCodes, active))
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
