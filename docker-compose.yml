@@ -7,9 +7,11 @@ services:
       - "3000:3000"
     environment:
       - CLAUDE_API_KEY=${CLAUDE_API_KEY}
-      - OLLAMA_URL=http://ollama:11434
+      - FALLBACK_URL=http://ollama:11434/api/chat
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
       - TROOPER_PORT=3000
+      - TROOPER_BIND=0.0.0.0
+      - OLLAMA_BASE_URL=http://ollama:11434
     depends_on:
       - ollama
     restart: unless-stopped

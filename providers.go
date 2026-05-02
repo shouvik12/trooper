@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -9,32 +11,206 @@ import (
 	"time"
 )
 
-// ── Provider ──────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const TailThreshold = 10 // Move oldest 5 turns to SITREP when Tail exceeds this
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Provider struct {
 	Name       string
 	URL        string
 	APIKey     string
-	AuthHeader string
 	Model      string
+	AuthHeader string
 }
 
-// ── Smart Chain ───────────────────────────────────────────────────────────────
+type ActiveProvider struct {
+	index int
+	mu    sync.RWMutex
+}
+
+func (a *ActiveProvider) Get() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.index
+}
+
+func (a *ActiveProvider) Set(i int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.index = i
+}
+
+// ── Rolling SITREP Structures ─────────────────────────────────────────────────
+
+type SessionState struct {
+	Anchor   []map[string]string // Turns 1-2 (Immortal context)
+	SITREP   string              // Rolling distilled summary
+	Tail     []map[string]string // Recent turns
+	LastSeen time.Time
+	mu       sync.Mutex
+}
+
+type SessionStore struct {
+	mu       sync.RWMutex
+	sessions map[string]*SessionState
+}
+
+func NewSessionStore() *SessionStore {
+	s := &SessionStore{sessions: make(map[string]*SessionState)}
+	go s.cleanup()
+	return s
+}
+
+func (s *SessionStore) cleanup() {
+	for {
+		time.Sleep(10 * time.Minute)
+		s.mu.Lock()
+		for id, state := range s.sessions {
+			if time.Since(state.LastSeen) > 24*time.Hour {
+				log.Printf("🧹 Session expired: %s", id)
+				delete(s.sessions, id)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+// Append manages the rolling window: moving older Tail turns into SITREP
+func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
+	s.mu.Lock()
+	state, ok := s.sessions[sessionID]
+	if !ok {
+		state = &SessionState{
+			LastSeen: time.Now(),
+		}
+		s.sessions[sessionID] = state
+	}
+	s.mu.Unlock()
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	// Lazily fill anchor from first 2 turns across any number of requests
+	for _, msg := range messages {
+		if len(state.Anchor) < 2 {
+			state.Anchor = append(state.Anchor, msg)
+		} else {
+			state.Tail = append(state.Tail, msg)
+		}
+	}
+	state.LastSeen = time.Now()
+
+	// If Tail grows too large, move the oldest 5 turns to SITREP in background
+	if len(state.Tail) > TailThreshold {
+		toCompress := make([]map[string]string, 5)
+		copy(toCompress, state.Tail[:5])
+		state.Tail = state.Tail[5:]
+		go s.updateSITREP(sessionID, toCompress)
+	}
+}
+
+// updateSITREP performs incremental distillation using Ollama
+func (s *SessionStore) updateSITREP(sessionID string, newTurns []map[string]string) {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	turnsJSON, _ := json.Marshal(newTurns)
+	prompt := fmt.Sprintf(`Update SITREP. Protocol: "direct" (v2).
+Rules: No filler, use word-level abbreviations, technical acronyms only.
+Current SITREP: %s
+New History to integrate: %s`, state.SITREP, string(turnsJSON))
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model":  folderModel(),
+		"prompt": prompt,
+		"stream": false,
+	})
+
+	resp, err := http.Post(
+		getEnv("OLLAMA_BASE_URL", "http://localhost:11434")+"/api/generate",
+		"application/json",
+		bytes.NewBuffer(reqBody),
+	)
+	if err != nil {
+		log.Printf("⚠️ SITREP distillation unreachable: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var res struct {
+		Response string `json:"response"`
+	}
+	json.NewDecoder(resp.Body).Decode(&res)
+
+	state.mu.Lock()
+	state.SITREP = res.Response
+	state.mu.Unlock()
+	log.Printf("📡 SITREP updated for session: %s", sessionID)
+}
+
+// GetTripleAnchor assembles the sandwich: Anchor + [SITREP] + Tail
+func (s *SessionStore) GetTripleAnchor(sessionID string) []map[string]string {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	payload := append([]map[string]string{}, state.Anchor...)
+	if state.SITREP != "" {
+		payload = append(payload, map[string]string{
+			"role":    "system",
+			"content": fmt.Sprintf("[STATE_SITREP: %s]", state.SITREP),
+		})
+	}
+	return append(payload, state.Tail...)
+}
+
+// folderModel returns the Ollama model used for SITREP distillation
+func folderModel() string {
+	return getEnv("OLLAMA_MODEL", "qwen2.5:3b")
+}
+
+// ── Health Check URL ──────────────────────────────────────────────────────────
+
+func healthCheckURL(p Provider) string {
+	switch p.Name {
+	case "claude":
+		return "https://api.anthropic.com/v1/models"
+	case "openai":
+		return "https://api.openai.com/v1/models"
+	case "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta/models?key=" + p.APIKey
+	default:
+		return ""
+	}
+}
+
+// ── Provider Setup ────────────────────────────────────────────────────────────
 
 func buildChain() []Provider {
-	chain := []Provider{}
+	var chain []Provider
 
-	// Claude — primary
 	if key := getEnv("CLAUDE_API_KEY", getEnv("PRIMARY_API_KEY", "")); key != "" {
 		chain = append(chain, Provider{
 			Name:       "claude",
 			URL:        getEnv("CLAUDE_URL", "https://api.anthropic.com/v1/messages"),
 			APIKey:     key,
 			AuthHeader: "x-api-key",
+			Model:      getEnv("CLAUDE_MODEL", "claude-3-5-haiku-20241022"),
 		})
 	}
 
-	// Gemini — optional cloud fallback, user opt-in
 	if key := getEnv("GEMINI_API_KEY", ""); key != "" {
 		chain = append(chain, Provider{
 			Name:       "gemini",
@@ -45,7 +221,6 @@ func buildChain() []Provider {
 		})
 	}
 
-	// OpenAI — optional cloud fallback, user opt-in
 	if key := getEnv("OPENAI_API_KEY", ""); key != "" {
 		chain = append(chain, Provider{
 			Name:       "openai",
@@ -56,7 +231,6 @@ func buildChain() []Provider {
 		})
 	}
 
-	// Ollama — always last, always local, privacy safety net
 	chain = append(chain, Provider{
 		Name:  "ollama",
 		URL:   getEnv("FALLBACK_URL", "http://localhost:11434/api/chat"),
@@ -66,24 +240,7 @@ func buildChain() []Provider {
 	return chain
 }
 
-// ── Active Provider ───────────────────────────────────────────────────────────
-
-type ActiveProvider struct {
-	mu    sync.RWMutex
-	index int
-}
-
-func (a *ActiveProvider) Get() int {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.index
-}
-
-func (a *ActiveProvider) Set(index int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.index = index
-}
+// ── Health Check ──────────────────────────────────────────────────────────────
 
 func startHealthCheck(chain []Provider, active *ActiveProvider) {
 	if getEnv("AUTO_RECOVERY", "false") != "true" {
@@ -103,26 +260,44 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 				if p.APIKey == "" {
 					continue
 				}
-				body := `{"model":"` + p.Model + `","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-				req, err := http.NewRequest("POST", p.URL, bytes.NewBufferString(body))
+
+				url := healthCheckURL(p)
+				if url == "" {
+					continue
+				}
+
+				var req *http.Request
+				var err error
+
+				if p.Name == "gemini" {
+					req, err = http.NewRequest("GET", url, nil)
+				} else {
+					req, err = http.NewRequest("GET", url, nil)
+					if err != nil {
+						continue
+					}
+					if strings.ToLower(p.AuthHeader) == "authorization" {
+						req.Header.Set("Authorization", "Bearer "+p.APIKey)
+					} else if p.AuthHeader != "" {
+						req.Header.Set(p.AuthHeader, p.APIKey)
+					}
+					if p.Name == "claude" {
+						req.Header.Set("anthropic-version", "2023-06-01")
+					}
+				}
+
 				if err != nil {
 					continue
 				}
-				req.Header.Set("Content-Type", "application/json")
-				if strings.ToLower(p.AuthHeader) == "authorization" {
-					req.Header.Set("Authorization", "Bearer "+p.APIKey)
-				} else if p.AuthHeader != "" {
-					req.Header.Set(p.AuthHeader, p.APIKey)
-				}
-				if p.Name == "claude" {
-					req.Header.Set("anthropic-version", "2023-06-01")
-				}
+
 				client := &http.Client{Timeout: 10 * time.Second}
 				resp, err := client.Do(req)
 				if err != nil {
+					log.Printf("🏥 %s unreachable", p.Name)
 					continue
 				}
 				resp.Body.Close()
+
 				if resp.StatusCode == http.StatusOK {
 					current := active.Get()
 					if i < current {
@@ -130,61 +305,10 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 						active.Set(i)
 					}
 					break
+				} else {
+					log.Printf("🏥 %s health check failed: %d", p.Name, resp.StatusCode)
 				}
 			}
 		}
 	}()
-}
-
-// ── Session Store ─────────────────────────────────────────────────────────────
-
-type Session struct {
-	Messages []map[string]string
-	LastSeen time.Time
-}
-
-type SessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
-}
-
-func NewSessionStore() *SessionStore {
-	s := &SessionStore{
-		sessions: make(map[string]*Session),
-	}
-	go s.cleanup()
-	return s
-}
-
-func (s *SessionStore) cleanup() {
-	for {
-		time.Sleep(10 * time.Minute)
-		s.mu.Lock()
-		for id, session := range s.sessions {
-			if time.Since(session.LastSeen) > 24*time.Hour {
-				log.Printf("🧹 Session expired: %s", id)
-				delete(s.sessions, id)
-			}
-		}
-		s.mu.Unlock()
-	}
-}
-
-func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.sessions[sessionID]; !ok {
-		s.sessions[sessionID] = &Session{}
-	}
-	s.sessions[sessionID].Messages = append(s.sessions[sessionID].Messages, messages...)
-	s.sessions[sessionID].LastSeen = time.Now()
-}
-
-func (s *SessionStore) Get(sessionID string) []map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if session, ok := s.sessions[sessionID]; ok {
-		return session.Messages
-	}
-	return nil
 }

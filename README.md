@@ -1,142 +1,147 @@
-# 🪖 trooper
+# 🪖 Trooper
 
-> **Local first. Cloud on demand.**  
-> Trooper is a zero-config proxy that keeps your AI conversations alive. When your cloud LLM fails, it falls back to local Ollama — full conversation context intact. Your app never knows.
-
----
-
-## Why Trooper
-
-**Local first. Cloud on demand.**
-
-Every other LLM proxy defaults to cloud-to-cloud routing. Trooper is built differently — your first fallback is always your local Ollama. Private. Your data never leaves your machine unless you explicitly choose it.
-
-Need more cloud resilience? Add provider keys and Trooper extends the chain automatically. No YAML. No config files. Just keys.
-
-```
-Default:     Claude → Ollama          (private, always)
-Opt-in:      Claude → Gemini → Ollama (cloud when you choose)
-Full chain:  Claude → Gemini → OpenAI → Ollama
-```
-
-This is what separates Trooper from LiteLLM, Bifrost, and every other gateway — they're built for cloud teams. Trooper is built for developers who value simplicity and privacy first.
+> **Cloud fails. Trooper doesn't.**  
+> A single Go binary that falls back to local Ollama when your cloud LLM quota runs out — session context carried forward automatically.
 
 ---
 
-## How it works
+## What Trooper is
+
+Trooper is a lightweight proxy that sits between your app and your cloud LLM providers. When Claude, Gemini, or OpenAI hits a quota limit or fails, Trooper automatically falls back to a local Ollama instance and carries the session context with it.
+
+Your app never changes. The conversation continues.
 
 ```
-Your App → http://localhost:3000 → Claude ✅
-                                 → quota hit ⚡
-                                 → Ollama (local) 🪖 full context intact
+Your App → Trooper → Claude  ✅  (works normally)
+                   → quota hit ⚡
+                   → Ollama (local) 🪖  (session continues)
 ```
-
-One environment variable swap and you're protected. Your app never changes.
 
 ---
 
-## Demo
+## Why not LiteLLM or Bifrost
 
-Start Trooper and watch the full chain in action:
+LiteLLM and Bifrost are excellent tools — but they solve a different problem.
+
+**LiteLLM** is a Python gateway for teams routing between 100+ cloud providers. Setup requires a Python environment, venv, and config files. Its fallback is always another cloud provider — your data still leaves your machine.
+
+**Bifrost** is enterprise-scale infrastructure for organisations managing multiple cloud accounts and compliance requirements.
+
+**Trooper is for individual developers and small teams** who run local models on their own hardware and want cloud quota exhaustion to just be handled — without setting up a full gateway stack.
+
+The fundamental difference:
+
+| | LiteLLM / Bifrost | Trooper |
+|---|---|---|
+| Fallback target | Another cloud provider | Your local machine |
+| Setup | `pip install`, venv, YAML | One Go binary, env vars |
+| Dependencies | Heavy Python stack | Zero — pure stdlib |
+| Works offline | ❌ | ✅ |
+| Data on fallback | Goes to another cloud | Stays on your machine |
+
+When LiteLLM falls back, your data goes to another cloud. When Trooper falls back, your data goes to your machine.
+
+---
+
+## How Trooper handles context
+
+A naive proxy would route the next request to Ollama cold — with no knowledge of what was discussed. The conversation breaks.
+
+Trooper maintains server-side session history and uses a three-layer context compaction system to carry the session forward when the budget is exceeded:
 
 ```
-2026/04/29 08:45:58 🏥 Auto recovery disabled — set AUTO_RECOVERY=true to enable
-2026/04/29 08:45:58 🪖  Trooper proxy starting on http://localhost:3000
-2026/04/29 08:45:58     Provider 1: claude
-2026/04/29 08:45:58     Provider 2: gemini
-2026/04/29 08:45:58     Provider 3: ollama
-2026/04/29 08:45:58     Triggers : HTTP map[400:true 402:true 429:true 529:true]
-2026/04/29 08:55:23 📥 POST /v1/messages (stream=false, session=abc-123)
-2026/04/29 08:55:24 🔄 Trying provider: claude
-2026/04/29 08:55:24 ⚠️  claude 400 — credit balance too low, trying next
-2026/04/29 08:55:24 🔄 Trying provider: gemini
-2026/04/29 08:55:25 ⚠️  gemini 429 — rate limited, retrying with backoff
-2026/04/29 08:55:27 ⚠️  gemini still failing after backoff — trying next
-2026/04/29 08:55:27 🔄 Trying provider: ollama
-2026/04/29 08:55:27 🪖  Routing to local model: qwen2.5:3b
+ANCHOR  (~10%)  — First 2 turns verbatim, never dropped
+SITREP  (~20%)  — Rule-based summary of middle turns
+TAIL    (~70%)  — Last N turns verbatim
+                  Total <= 6144 tokens (configurable)
 ```
 
-Response headers show exactly what happened:
+The SITREP is extracted automatically from the middle turns using rule-based signal classification — no LLM call needed. It looks like this in practice (from a real test session):
 
 ```
-X-Trooper-Provider: ollama
-X-Trooper-Fallback-Count: 2
-X-Trooper-Trigger: 429
+SITREP: intent="building a go proxy called trooper that falls back to local"
+        stage=in_progress confidence=1.00
+        open=5 actions=5 resolved=1
 ```
 
-Full conversation context preserved — Ollama picks up exactly where Claude left off:
+The full JSON sent to Ollama:
 
-**Turn 1** — sent to Claude, fell back to Ollama:
-```bash
-curl http://localhost:3000/v1/messages \
-  -H "X-Session-ID: my-session" \
-  -d '{"messages": [{"role": "user", "content": "my project deadline is Friday and I prefer TypeScript"}]}'
-# Response: "Got it! I'll keep that in mind."
+```json
+[TROOPER_SITREP]{
+  "intent": "building a go proxy called trooper that falls back to local",
+  "stage": "in_progress",
+  "constraints": ["local-first", "proxy-layer"],
+  "active_entities": ["Trooper", "Ollama", "Claude"],
+  "open_loops": ["streaming pending"],
+  "recent_actions": ["deploy monday", "check streaming"],
+  "resolved_loops": ["resolve the health check"],
+  "confidence": 1.00
+}[/TROOPER_SITREP]
 ```
 
-**Turn 2** — new request, same session:
-```bash
-curl http://localhost:3000/v1/messages \
-  -H "X-Session-ID: my-session" \
-  -d '{"messages": [{"role": "user", "content": "what do you know about me?"}]}'
-# Response: "Your project deadline is Friday and you prefer TypeScript over JavaScript."
+Compaction triggers automatically when the session exceeds the token budget:
+
+```
+📦  Context compaction triggered — 1532 tokens exceeds 6144 budget
+    Total turns    : 5
+    Anchor turns   : 2 (~180 tokens)
+    Middle turns   : 2 → SITREP (~148 tokens)
+    Recent turns   : 1 (~36 tokens)
+    Tokens used    : 364 / 6144
+    SITREP         : intent="building a go proxy" stage=in_progress
+                     confidence=1.00 open=5 actions=5 resolved=1
 ```
 
-The app never knew Claude went down. 🪖
+**What this actually means:** Ollama receives a compressed picture of the conversation — topic, intent, what's resolved, what's pending, and recent actions. It responds in context rather than starting cold. Quality of continuation depends on your local model — a 3B model will follow the topic but may not match the precision of a larger model.
+
+> **Honest note:** Compaction is lossy by design. The SITREP preserves intent and state — not verbatim history. Signal extraction is rule-based, not LLM-generated, so phrase quality varies. For most conversational use cases this is sufficient. For precision-critical workflows, keep sessions short or increase `CONTEXT_WINDOW`.
 
 ---
 
 ## Quickstart
 
-### Docker (recommended)
+### Prerequisites
+- Go 1.22+ (or Docker)
+- Ollama running locally with at least one model pulled
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+### Run locally
 
 ```bash
 git clone https://github.com/shouvik12/trooper
 cd trooper
 
+export CLAUDE_API_KEY=sk-ant-...
+go run main.go providers.go
+```
+
+Trooper starts on `http://127.0.0.1:3000`. Binds to localhost by default — your API keys are not exposed on the network.
+
+### Run with Docker
+
+```bash
 cp .env.example .env
 # edit .env — set CLAUDE_API_KEY
 
 docker compose up
 ```
 
-### Local
-
-```bash
-# Prerequisites: Go 1.22+, Ollama running locally
-ollama pull qwen2.5:3b
-ollama serve
-
-export CLAUDE_API_KEY=sk-ant-...
-go run main.go providers.go
-```
-
-Trooper starts on `http://localhost:3000`.
-
-> ⚠️ If no cloud provider key is set, Trooper will warn on startup:
-> ```
-> ⚠️  No cloud providers configured — set at least one of: CLAUDE_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY
->     Trooper needs a cloud provider to fall back from.
-> ```
-
-> 💡 Enable auto recovery to silently route back when a provider recovers:
-> ```bash
-> AUTO_RECOVERY=true go run main.go providers.go
-> ```
-
 ---
 
 ## Usage
 
-Just change your base URL — nothing else:
+Point your existing client at Trooper — nothing else changes:
 
-**Python + Claude SDK:**
+**Python + Anthropic SDK:**
 ```python
 import anthropic
 
 client = anthropic.Anthropic(
     api_key="your-key",
-    base_url="http://localhost:3000",  # 👈 only change
+    base_url="http://localhost:3000",  # only change
 )
 ```
 
@@ -146,96 +151,54 @@ from openai import OpenAI
 
 client = OpenAI(
     api_key="your-key",
-    base_url="http://localhost:3000",  # 👈 only change
+    base_url="http://localhost:3000",  # only change
 )
 ```
 
 **curl:**
 ```bash
-curl http://localhost:3000/v1/messages \
+curl http://localhost:3000/ \
   -H "Content-Type: application/json" \
-  -H "x-api-key: $CLAUDE_API_KEY" \
+  -H "X-Session-ID: my-session" \
   -d '{
     "model": "claude-3-5-haiku-20241022",
-    "max_tokens": 256,
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
+Pass `X-Session-ID` to track named sessions. Without it, Trooper assigns a unique auto session per request — no context bleed between users.
+
 ---
 
-## Smart Chain
+## Provider chain
 
-By default Trooper falls back to local Ollama — your conversations never leave your machine.
-
-Add cloud provider keys to extend the chain:
+Trooper builds the chain from environment variables. Ollama is always last.
 
 ```bash
-# Default — Claude with local fallback
+# Claude only (default)
 CLAUDE_API_KEY=sk-ant-...
 # Chain: Claude → Ollama
 
-# Add Gemini as cloud fallback before Ollama
+# Claude + Gemini
 CLAUDE_API_KEY=sk-ant-...
 GEMINI_API_KEY=AIza...
 # Chain: Claude → Gemini → Ollama
 
-# Full cloud chain — Ollama always last
+# Full chain
 CLAUDE_API_KEY=sk-ant-...
 GEMINI_API_KEY=AIza...
 OPENAI_API_KEY=sk-...
 # Chain: Claude → Gemini → OpenAI → Ollama
-
-# Gemini only — no Claude
-GEMINI_API_KEY=AIza...
-# Chain: Gemini → Ollama
 ```
-
-Ollama is always last. Always private. Always there.
 
 ---
 
-## Context Preservation
-
-Trooper maintains full conversation history server-side per session. When your cloud provider fails mid-conversation, Ollama picks up with complete context intact.
-
-Pass `X-Session-ID` header to enable named session tracking:
-
-```bash
-# Turn 1 — tell Trooper something
-curl http://localhost:3000/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "X-Session-ID: dev-session-001" \
-  -d '{
-    "model": "claude-3-5-haiku-20241022",
-    "max_tokens": 100,
-    "messages": [{"role": "user", "content": "I am building a Go microservice with Postgres"}]
-  }'
-
-# Turn 2 — even after provider switch, context is preserved
-curl http://localhost:3000/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "X-Session-ID: dev-session-001" \
-  -d '{
-    "model": "claude-3-5-haiku-20241022",
-    "max_tokens": 100,
-    "messages": [{"role": "user", "content": "what stack am I using?"}]
-  }'
-# Response: "You are building a Go microservice with Postgres."
-```
-
-> 💡 No `X-Session-ID`? Trooper assigns a unique auto session per request — no context bleed between users.
-
----
-
-## Smart Fallback
-
-Trooper handles different failure modes intelligently:
+## Fallback behaviour
 
 | Status | Trooper action |
 |---|---|
 | `200 OK` | Pass through |
-| `429 Rate Limited` | Retry with 2s backoff, then try next provider |
+| `429 Rate Limited` | Retry with 2s backoff, then try next |
 | `402 Payment Required` | Fall back immediately |
 | `400 Credit Balance` | Detect credit error, fall back immediately |
 | `401 Unauthorized` | Surface error — bad keys are never masked |
@@ -244,50 +207,45 @@ Trooper handles different failure modes intelligently:
 
 ---
 
-## Health Headers
+## Response headers
 
-Every response includes Trooper's routing decision:
+Every response tells you exactly what happened:
 
 ```bash
-curl http://localhost:3000/v1/messages ... -v 2>&1 | grep X-Trooper
+curl http://localhost:3000/ ... -v 2>&1 | grep X-Trooper
 
-# Claude served directly
+# Cloud served normally
 X-Trooper-Provider: claude
 X-Trooper-Fallback-Count: 0
 X-Trooper-Trigger:
 
-# Claude failed, Ollama caught it
+# Quota hit, fell back to Ollama
 X-Trooper-Provider: ollama
 X-Trooper-Fallback-Count: 1
 X-Trooper-Trigger: credit_balance
 
-# Claude + Gemini failed, Ollama caught it
+# Two providers failed, Ollama caught it
 X-Trooper-Provider: ollama
 X-Trooper-Fallback-Count: 2
 X-Trooper-Trigger: 429
 ```
 
-Log them, alert on them, build dashboards around them.
-
 ---
 
-## Auto Recovery *(experimental)*
+## Auto recovery
 
-Trooper can automatically recover to the best available provider when it comes back online. Disabled by default — enable with a feature flag:
+When a cloud provider comes back online, Trooper can silently route back to it. Disabled by default.
 
 ```bash
 AUTO_RECOVERY=true go run main.go providers.go
 ```
 
-When enabled, Trooper runs a background health check every 60 seconds. If a higher-priority provider recovers, Trooper silently routes back to it. Your app always gets the best available model without any intervention.
+Health checks use a free `GET /models` endpoint — no inference requests, no cost.
 
 ```
-2026/04/29 09:00:00 🏥 Auto recovery enabled — checking every 60 seconds
-2026/04/29 09:01:00 🏥 Health check running...
-2026/04/29 09:01:01 🔄 Auto recovery — switching back to claude
+🏥 Auto recovery enabled — checking every 60 seconds
+🔄 Auto recovery — switching back to claude
 ```
-
-> ⚠️ This feature is experimental. Enable it when you're comfortable with the behaviour in your environment.
 
 ---
 
@@ -295,66 +253,57 @@ When enabled, Trooper runs a background health check every 60 seconds. If a high
 
 | Variable | Default | Description |
 |---|---|---|
-| `CLAUDE_API_KEY` | *(optional)* | Anthropic API key — set at least one cloud provider key |
-| `GEMINI_API_KEY` | *(optional)* | Google Gemini API key — enables Gemini in chain |
-| `OPENAI_API_KEY` | *(optional)* | OpenAI API key — enables OpenAI in chain |
-| `OLLAMA_MODEL` | `qwen2.5:3b` | Local model to fall back to |
-| `FALLBACK_URL` | `http://localhost:11434/api/chat` | Local Ollama endpoint |
+| `CLAUDE_API_KEY` | — | Anthropic API key |
+| `CLAUDE_MODEL` | — | Default Claude model (request model takes priority if set) |
+| `GEMINI_API_KEY` | — | Google Gemini API key |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Default Gemini model |
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Default OpenAI model |
+| `OLLAMA_MODEL` | `qwen2.5:3b` | Local fallback model |
+| `FALLBACK_URL` | `http://localhost:11434/api/chat` | Ollama endpoint |
+| `CONTEXT_WINDOW` | `6144` | Token budget for context compaction |
 | `QUOTA_STATUS_CODES` | `429,402,529,400` | HTTP codes that trigger fallback |
-| `TROOPER_PORT` | `3000` | Port trooper listens on |
-| `AUTO_RECOVERY` | `false` | Set `true` to auto-recover to primary when it comes back |
+| `TROOPER_PORT` | `3000` | Port Trooper listens on |
+| `TROOPER_BIND` | `127.0.0.1` | Bind address — set `0.0.0.0` only if you need network access |
+| `AUTO_RECOVERY` | `false` | Enable automatic recovery to primary provider |
 
 ---
 
 ## Recommended local models
 
-| Model | Size | Quality | Pull command |
-|---|---|---|---|
-| `qwen2.5:3b` | 1.9GB | Fast, lightweight | `ollama pull qwen2.5:3b` |
-| `llama3.1:8b` | 4.7GB | Best all-rounder | `ollama pull llama3.1:8b` |
-| `mistral:7b` | 4.1GB | Strong reasoning | `ollama pull mistral:7b` |
-| `gemma2:9b` | 5.5GB | Google's best mid-size | `ollama pull gemma2:9b` |
-
----
-
-## Features
-
-- ✅ Local first — first fallback always hits Ollama, your data stays private
-- ✅ Cloud on demand — add Gemini or OpenAI keys to extend the chain
-- ✅ Smart Chain — zero YAML, zero config, just set your keys
-- ✅ Context preservation — full conversation history survives every provider switch
-- ✅ Smart fallback — 429 retry with backoff, 402 immediate, credit balance detection
-- ✅ Health headers — X-Trooper-Provider, X-Trooper-Fallback-Count, X-Trooper-Trigger
-- ✅ Request timeout — 30s per provider, no hanging requests
-- ✅ Unique session IDs — no context bleed between users
-- ✅ Streaming support — responses re-emitted as SSE
-- ✅ Zero code changes — just redirect your base URL
-- ✅ Single Go binary — tiny Docker image (~10MB)
-- ✅ Auto recovery — experimental, set AUTO_RECOVERY=true to enable
+| Model | Size | Notes |
+|---|---|---|
+| `qwen2.5:3b` | 1.9GB | Default — fast, lightweight |
+| `qwen2.5:7b` | 4.7GB | Better quality, still fast |
+| `llama3.1:8b` | 4.9GB | Strong all-rounder |
+| `mistral:7b` | 4.1GB | Good reasoning |
 
 ---
 
 ## Roadmap
 
-**V1 — Released**
-- ✅ Zero-config Claude → Ollama fallback
-- ✅ Streaming support
-- ✅ Configurable trigger codes
-
 **V2 — Released**
+- ✅ Cloud → Ollama fallback with session continuity
+- ✅ Context compaction — Anchor + SITREP + Tail
+- ✅ Rule-based SITREP extraction — intent, stage, open loops, actions, resolved
+- ✅ Live streaming — tokens pipe through in real time
+- ✅ Health check — free `GET /models`, no inference cost
 - ✅ Smart fallback — 429 retry, 402 immediate, credit balance detection
-- ✅ Context preservation — full conversation history across provider switch
-- ✅ Smart Chain — local first, cloud on demand
-- ✅ Health Headers — X-Trooper-Provider, X-Trooper-Fallback-Count, X-Trooper-Trigger
-- ✅ Request timeout — 30s per provider
-- ✅ Unique session IDs — no context bleed
-- ✅ Auto Recovery — experimental feature flag (AUTO_RECOVERY=true)
+- ✅ Response headers — provider, fallback count, trigger
+- ✅ Session TTL — 24hr expiry, 10min cleanup sweep
+- ✅ Secure by default — binds to `127.0.0.1`
+- ✅ Zero dependencies — pure Go stdlib
+- ✅ Auto recovery — experimental (`AUTO_RECOVERY=true`)
 
 **V3 — Planned**
-- ⬜ Priority-aware cloud routing — let users define when to escalate from local Ollama to cloud (e.g. for complex tasks or long context) rather than always treating cloud as primary
+- ⬜ Context checksum — verify context integrity across fallback
+- ⬜ Drift classification — LOW / PARTIAL / HIGH
+- ⬜ Replayability — re-run exact execution paths
+- ⬜ Confidence engine — composable score from model + checksum + degradation
+- ⬜ Policy layer — `prefer_local`, `max_cost`, `min_confidence`
+- ⬜ SQLite session persistence — survive restarts
+- ⬜ SITREP v2 — expose structured JSON to clients via response headers
 - ⬜ Prometheus metrics endpoint
-- ⬜ Grafana dashboard — fallback frequency, recovery time, cost savings
-- ⬜ Local-first observability — metrics never leave your machine
 
 ---
 

@@ -88,7 +88,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 
 		log.Printf("📥 %s %s (stream=%v, session=%s)", r.Method, r.URL.Path, wantsStream, sessionID)
 
-		history := store.Get(sessionID)
+		history := store.GetTripleAnchor(sessionID)
 		fallbackCount := 0
 		trigger := ""
 
@@ -111,6 +111,21 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 						log.Printf("❌ Ollama error: %v", err)
 						http.Error(w, `{"error":"all providers failed"}`, http.StatusBadGateway)
 						return
+					}
+					// Store assistant response in session
+					var parsedResp map[string]interface{}
+					if json.Unmarshal(fallbackResp, &parsedResp) == nil {
+						if choices, ok := parsedResp["choices"].([]interface{}); ok && len(choices) > 0 {
+							if choice, ok := choices[0].(map[string]interface{}); ok {
+								if msg, ok := choice["message"].(map[string]interface{}); ok {
+									if content, ok := msg["content"].(string); ok && content != "" {
+										store.Append(sessionID, []map[string]string{
+											{"role": "assistant", "content": content},
+										})
+									}
+								}
+							}
+						}
 					}
 					w.Header().Set("Content-Type", "application/json")
 					w.Write(fallbackResp)
@@ -218,7 +233,9 @@ func callProvider(body []byte, r *http.Request, p Provider) (*http.Response, err
 	var reqMap map[string]interface{}
 	json.Unmarshal(body, &reqMap)
 	if p.Model != "" {
-		reqMap["model"] = p.Model
+		if _, hasModel := reqMap["model"]; !hasModel {
+			reqMap["model"] = p.Model
+		}
 	}
 	newBody, _ := json.Marshal(reqMap)
 
@@ -245,7 +262,7 @@ func callProvider(body []byte, r *http.Request, p Provider) (*http.Response, err
 // ── Fallback (Ollama) ─────────────────────────────────────────────────────────
 
 func callFallback(body []byte, p Provider, history []map[string]string) ([]byte, error) {
-	messages := history
+	messages := buildContext(history)
 	if len(messages) == 0 {
 		var err error
 		messages, err = extractMessages(body)
@@ -279,7 +296,7 @@ func callFallback(body []byte, p Provider, history []map[string]string) ([]byte,
 }
 
 func streamFallback(w http.ResponseWriter, body []byte, p Provider, history []map[string]string) {
-	messages := history
+	messages := buildContext(history)
 	if len(messages) == 0 {
 		var err error
 		messages, err = extractMessages(body)
@@ -343,6 +360,529 @@ func streamFallback(w http.ResponseWriter, body []byte, p Provider, history []ma
 	if canFlush {
 		flusher.Flush()
 	}
+}
+
+// ── Normalization ─────────────────────────────────────────────────────────────
+
+func normalize(text string) string {
+	text = strings.ToLower(text)
+
+	replacements := map[string]string{
+		"fails":   "fail",
+		"failed":  "fail",
+		"failing": "fail",
+
+		"fixed":     "resolve",
+		"resolved":  "resolve",
+		"resolving": "resolve",
+
+		"errors":   "error",
+		"issues":   "issue",
+		"problems": "problem",
+	}
+
+	for k, v := range replacements {
+		text = strings.ReplaceAll(text, k, v)
+	}
+
+	return text
+}
+
+// ── Signal Classification ─────────────────────────────────────────────────────
+
+type SignalType string
+
+const (
+	SignalOpenLoop SignalType = "open_loop"
+	SignalAction   SignalType = "action"
+	SignalResolved SignalType = "resolved"
+)
+
+var openLoopWords = []string{
+	"broken", "pending", "fail", "issue", "problem",
+	"stuck", "blocked", "unclear", "missing", "wrong",
+}
+
+var resolvedLoopWords = []string{
+	"resolve", "done", "confirmed", "locked", "completed",
+	"working", "closed", "shipped", "merged",
+}
+
+var actionWords = []string{
+	"restart", "deploy", "check", "update", "switch",
+	"migrate", "rollback", "enable", "disable", "configure",
+}
+
+func classifyWord(word string) SignalType {
+	for _, o := range openLoopWords {
+		if strings.HasPrefix(word, o) {
+			return SignalOpenLoop
+		}
+	}
+	for _, r := range resolvedLoopWords {
+		if strings.HasPrefix(word, r) {
+			return SignalResolved
+		}
+	}
+	for _, a := range actionWords {
+		if strings.HasPrefix(word, a) {
+			return SignalAction
+		}
+	}
+	return ""
+}
+
+// ── Phrase Extraction ─────────────────────────────────────────────────────────
+
+func extractForwardPhrase(words []string, i int) string {
+	end := i + 5
+	if end > len(words) {
+		end = len(words)
+	}
+
+	phraseWords := []string{}
+	for j := i; j < end; j++ {
+		w := strings.Trim(words[j], ".,!?:;\"'()")
+		if w == "" {
+			continue
+		}
+		phraseWords = append(phraseWords, w)
+
+		// Stop early if sentence likely ends
+		if strings.HasSuffix(words[j], ".") || strings.HasSuffix(words[j], ",") {
+			break
+		}
+	}
+
+	return strings.Join(phraseWords, " ")
+}
+
+// ── SITREP Extraction ─────────────────────────────────────────────────────────
+
+var intentVerbs = []string{
+	"building", "creating", "fixing", "designing",
+	"implementing", "adding", "removing", "updating",
+	"trying", "want", "need", "working on",
+	"debugging", "testing", "deploying", "migrating",
+}
+
+var tier1Entities = []string{
+	"redis", "ollama", "claude", "trooper", "gemini", "openai",
+	"docker", "postgres", "mysql", "kafka", "nginx", "kubernetes",
+}
+
+var tier3Entities = []string{
+	"proxy", "server", "session", "fallback", "token",
+	"cache", "queue", "handler", "router", "middleware",
+}
+
+type SITREP struct {
+	Intent        string
+	IntentSource  string
+	Entities      []string
+	OpenLoops     []string
+	RecentActions []string
+	ResolvedLoops []string
+	Confidence    float64
+}
+
+func extractIntent(messages []map[string]string, latestUser string) (string, string, float64) {
+	// Step 1 — first middle message
+	if len(messages) > 0 {
+		content := strings.ToLower(messages[0]["content"])
+		for _, verb := range intentVerbs {
+			if strings.Contains(content, verb) {
+				idx := strings.Index(content, verb)
+				end := idx + 60
+				if end > len(content) {
+					end = len(content)
+				}
+				return strings.TrimSpace(content[idx:end]), "first_middle_message", 0.4
+			}
+		}
+	}
+
+	// Step 2 — latest user message
+	if latestUser != "" {
+		content := strings.ToLower(latestUser)
+		for _, verb := range intentVerbs {
+			if strings.Contains(content, verb) {
+				idx := strings.Index(content, verb)
+				end := idx + 60
+				if end > len(content) {
+					end = len(content)
+				}
+				return strings.TrimSpace(content[idx:end]), "latest_user_message", 0.3
+			}
+		}
+	}
+
+	// Step 3 — keyword frequency
+	freq := map[string]int{}
+	for _, m := range messages {
+		words := strings.Fields(strings.ToLower(m["content"]))
+		for _, w := range words {
+			w = strings.Trim(w, ".,!?:;\"'")
+			if len(w) > 4 {
+				freq[w]++
+			}
+		}
+	}
+	topWord := ""
+	topCount := 0
+	for w, c := range freq {
+		if c > topCount {
+			topWord = w
+			topCount = c
+		}
+	}
+	if topWord != "" {
+		return topWord, "keyword_frequency", 0.2
+	}
+
+	return "Unknown", "none", 0.0
+}
+
+func extractEntities(messages []map[string]string) []string {
+	seen := map[string]bool{}
+	tier1 := []string{}
+	tier2 := []string{}
+	tier3 := []string{}
+
+	for _, m := range messages {
+		words := strings.Fields(m["content"])
+		for _, w := range words {
+			clean := strings.Trim(w, ".,!?:;\"'()")
+			lower := strings.ToLower(clean)
+
+			if seen[lower] || clean == "" {
+				continue
+			}
+
+			// Tier 1 — named tools
+			for _, t1 := range tier1Entities {
+				if lower == t1 {
+					tier1 = append(tier1, clean)
+					seen[lower] = true
+				}
+			}
+			if seen[lower] {
+				continue
+			}
+
+			// File names
+			if strings.HasSuffix(lower, ".go") ||
+				strings.HasSuffix(lower, ".yaml") ||
+				strings.HasSuffix(lower, ".yml") ||
+				strings.HasSuffix(lower, ".json") {
+				tier1 = append(tier1, clean)
+				seen[lower] = true
+				continue
+			}
+
+			// Env vars (ALL_CAPS_WITH_UNDERSCORE)
+			if clean == strings.ToUpper(clean) && strings.Contains(clean, "_") && len(clean) > 3 {
+				tier1 = append(tier1, clean)
+				seen[lower] = true
+				continue
+			}
+
+			// Error codes
+			if code, err := strconv.Atoi(clean); err == nil {
+				if code == 400 || code == 401 || code == 429 || code == 402 || code == 529 {
+					tier2 = append(tier2, clean)
+					seen[lower] = true
+					continue
+				}
+			}
+
+			// Numbers with units
+			if strings.HasSuffix(lower, "k") || strings.HasSuffix(lower, "hr") || strings.HasSuffix(lower, "mb") {
+				tier2 = append(tier2, clean)
+				seen[lower] = true
+				continue
+			}
+
+			// Tier 3 — generic technical
+			for _, t3 := range tier3Entities {
+				if lower == t3 {
+					tier3 = append(tier3, clean)
+					seen[lower] = true
+				}
+			}
+		}
+	}
+
+	result := []string{}
+	result = append(result, tier1...)
+	result = append(result, tier2...)
+	result = append(result, tier3...)
+	if len(result) > 5 {
+		result = result[:5]
+	}
+	return result
+}
+
+func extractSignals(messages []map[string]string) (openLoops, recentActions, resolvedLoops []string) {
+	seenOpen := map[string]bool{}
+	seenActions := map[string]bool{}
+	seenResolved := map[string]bool{}
+
+	// Focus on last 6 turns
+	startIdx := 0
+	if len(messages) > 6 {
+		startIdx = len(messages) - 6
+	}
+
+	for _, m := range messages[startIdx:] {
+		content := normalize(m["content"])
+		words := strings.Fields(content)
+
+		for i, raw := range words {
+			word := strings.Trim(raw, ".,!?:;\"'()")
+			if word == "" {
+				continue
+			}
+
+			signalType := classifyWord(word)
+			if signalType == "" {
+				continue
+			}
+
+			phrase := extractForwardPhrase(words, i)
+			if len(phrase) < 4 {
+				continue
+			}
+
+			switch signalType {
+			case SignalOpenLoop:
+				if !seenOpen[phrase] {
+					openLoops = append(openLoops, phrase)
+					seenOpen[phrase] = true
+				}
+			case SignalResolved:
+				if !seenResolved[phrase] {
+					resolvedLoops = append(resolvedLoops, phrase)
+					seenResolved[phrase] = true
+				}
+			case SignalAction:
+				if !seenActions[phrase] {
+					recentActions = append(recentActions, phrase)
+					seenActions[phrase] = true
+				}
+			}
+		}
+	}
+
+	if len(openLoops) > 5 {
+		openLoops = openLoops[:5]
+	}
+	if len(recentActions) > 5 {
+		recentActions = recentActions[:5]
+	}
+	if len(resolvedLoops) > 5 {
+		resolvedLoops = resolvedLoops[:5]
+	}
+	return
+}
+
+func extractConstraints(entities []string) []string {
+	constraints := []string{}
+	knownConstraints := map[string]string{
+		"ollama":    "local-first",
+		"trooper":   "proxy-layer",
+		"openai":    "openai-compatible",
+		"claude":    "anthropic-compatible",
+		"gemini":    "gemini-compatible",
+		"docker":    "containerized",
+		"streaming": "streaming-required",
+	}
+	seen := map[string]bool{}
+	for _, e := range entities {
+		lower := strings.ToLower(e)
+		if c, ok := knownConstraints[lower]; ok {
+			if !seen[c] {
+				constraints = append(constraints, c)
+				seen[c] = true
+			}
+		}
+	}
+	if len(constraints) == 0 {
+		constraints = append(constraints, "general")
+	}
+	return constraints
+}
+
+func buildSITREP(middleMessages []map[string]string, latestUser string) SITREP {
+	intent, source, intentScore := extractIntent(middleMessages, latestUser)
+	entities := extractEntities(middleMessages)
+	openLoops, recentActions, resolvedLoops := extractSignals(middleMessages)
+
+	confidence := intentScore
+	if len(entities) >= 3 {
+		confidence += 0.3
+	} else if len(entities) > 0 {
+		confidence += 0.1
+	}
+	total := len(openLoops) + len(recentActions) + len(resolvedLoops)
+	if total >= 2 {
+		confidence += 0.3
+	} else if total > 0 {
+		confidence += 0.1
+	}
+
+	return SITREP{
+		Intent:        intent,
+		IntentSource:  source,
+		Entities:      entities,
+		OpenLoops:     openLoops,
+		RecentActions: recentActions,
+		ResolvedLoops: resolvedLoops,
+		Confidence:    confidence,
+	}
+}
+
+func intentStage(source string) string {
+	switch source {
+	case "first_middle_message":
+		return "in_progress"
+	case "latest_user_message":
+		return "debugging"
+	case "keyword_frequency":
+		return "unclear"
+	default:
+		return "unknown"
+	}
+}
+
+func formatSITREP(s SITREP) string {
+	type sitrepJSON struct {
+		Intent         string   `json:"intent"`
+		Stage          string   `json:"stage"`
+		Constraints    []string `json:"constraints"`
+		ActiveEntities []string `json:"active_entities"`
+		OpenLoops      []string `json:"open_loops"`
+		RecentActions  []string `json:"recent_actions"`
+		ResolvedLoops  []string `json:"resolved_loops"`
+		Confidence     float64  `json:"confidence"`
+	}
+
+	payload := sitrepJSON{
+		Intent:         s.Intent,
+		Stage:          intentStage(s.IntentSource),
+		Constraints:    extractConstraints(s.Entities),
+		ActiveEntities: s.Entities,
+		OpenLoops:      s.OpenLoops,
+		RecentActions:  s.RecentActions,
+		ResolvedLoops:  s.ResolvedLoops,
+		Confidence:     s.Confidence,
+	}
+
+	out, _ := json.Marshal(payload)
+	return "[TROOPER_SITREP]" + string(out) + "[/TROOPER_SITREP]"
+}
+
+// ── Context Compaction ────────────────────────────────────────────────────────
+
+func estimateTokens(s string) int {
+	return len(s) / 4
+}
+
+func buildContext(history []map[string]string) []map[string]string {
+	contextWindow := 6144
+	if v := getEnv("CONTEXT_WINDOW", ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			contextWindow = n
+		}
+	}
+
+	recentBudget := contextWindow * 70 / 100
+
+	if len(history) == 0 {
+		return history
+	}
+
+	// Count total tokens
+	totalTokens := 0
+	for _, m := range history {
+		totalTokens += estimateTokens(m["content"])
+	}
+
+	// No compaction needed
+	if totalTokens <= contextWindow {
+		log.Printf("📦  No compaction needed — %d tokens fits within %d budget", totalTokens, contextWindow)
+		return history
+	}
+
+	log.Printf("📦  Context compaction triggered — %d tokens exceeds %d budget", totalTokens, contextWindow)
+
+	// ── Anchor — first 2 messages ─────────────────────────────────────────────
+	anchorMessages := []map[string]string{}
+	anchorTokens := 0
+	anchorEnd := 0
+	for i, m := range history {
+		if i >= 2 {
+			anchorEnd = i
+			break
+		}
+		anchorMessages = append(anchorMessages, m)
+		anchorTokens += estimateTokens(m["content"])
+	}
+	if anchorEnd == 0 {
+		anchorEnd = len(anchorMessages)
+	}
+
+	// ── Tail — last N turns within budget ─────────────────────────────────────
+	recentMessages := []map[string]string{}
+	recentTokens := 0
+	recentStart := len(history)
+	for i := len(history) - 1; i >= anchorEnd; i-- {
+		t := estimateTokens(history[i]["content"])
+		if recentTokens+t > recentBudget {
+			recentStart = i + 1
+			break
+		}
+		recentMessages = append([]map[string]string{history[i]}, recentMessages...)
+		recentTokens += t
+		recentStart = i
+	}
+
+	// ── SITREP — extract from middle ──────────────────────────────────────────
+	middleMessages := history[anchorEnd:recentStart]
+
+	latestUser := ""
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i]["role"] == "user" {
+			latestUser = history[i]["content"]
+			break
+		}
+	}
+
+	sitrep := buildSITREP(middleMessages, latestUser)
+	sitrepText := formatSITREP(sitrep)
+
+	// ── Assemble ──────────────────────────────────────────────────────────────
+	result := []map[string]string{}
+	result = append(result, anchorMessages...)
+	result = append(result, map[string]string{
+		"role":    "system",
+		"content": sitrepText,
+	})
+	result = append(result, recentMessages...)
+
+	// ── Log ───────────────────────────────────────────────────────────────────
+	totalUsed := anchorTokens + estimateTokens(sitrepText) + recentTokens
+	log.Printf("📦  Context compaction complete")
+	log.Printf("    Total turns    : %d", len(history))
+	log.Printf("    Anchor turns   : %d (~%d tokens)", len(anchorMessages), anchorTokens)
+	log.Printf("    Middle turns   : %d → SITREP (~%d tokens)", len(middleMessages), estimateTokens(sitrepText))
+	log.Printf("    Recent turns   : %d (~%d tokens)", len(recentMessages), recentTokens)
+	log.Printf("    Tokens used    : %d / %d", totalUsed, contextWindow)
+	log.Printf("    SITREP         : intent=%q stage=%s confidence=%.2f open=%d actions=%d resolved=%d",
+		sitrep.Intent, intentStage(sitrep.IntentSource), sitrep.Confidence,
+		len(sitrep.OpenLoops), len(sitrep.RecentActions), len(sitrep.ResolvedLoops))
+
+	return result
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -439,12 +979,11 @@ func wrapAsOpenAI(text string, model string) []byte {
 
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
+	io.Copy(w, resp.Body)
 }
 
 func getEnv(key, fallback string) string {
