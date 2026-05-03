@@ -39,8 +39,8 @@ func main() {
 		log.Printf("    Provider %d: %s", i+1, p.Name)
 	}
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
-
-	http.HandleFunc("/", makeHandler(chain, quotaCodes, active))
+	store := NewSessionStore()
+	http.HandleFunc("/", makeHandler(chain, quotaCodes, active, store))
 	if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
@@ -62,8 +62,7 @@ func loadQuotaCodes() map[int]bool {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvider) http.HandlerFunc {
-	store := NewSessionStore()
+func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvider, store *SessionStore) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
