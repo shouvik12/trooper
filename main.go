@@ -93,7 +93,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		trigger := ""
 
 		// Try each provider starting from active index
-		for i := active.Get(); i < len(chain); i++ {
+		for i := 0; i < len(chain); i++ {
 			provider := chain[i]
 			log.Printf("🔄 Trying provider: %s", provider.Name)
 
@@ -139,7 +139,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				log.Printf("⚠️  %s network error: %v — trying next", provider.Name, err)
 				fallbackCount++
 				trigger = "network_error"
-				active.Set(i + 1)
 				continue
 			}
 
@@ -158,7 +157,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "401"
-				active.Set(i + 1)
 				continue
 
 			case resp.StatusCode == 429:
@@ -180,7 +178,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "429"
-				active.Set(i + 1)
 				continue
 
 			case resp.StatusCode == 402:
@@ -189,7 +186,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "402"
-				active.Set(i + 1)
 				continue
 
 			case resp.StatusCode == 400:
@@ -199,7 +195,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 					log.Printf("⚠️  %s 400 — credit balance too low, trying next", provider.Name)
 					fallbackCount++
 					trigger = "credit_balance"
-					active.Set(i + 1)
 					continue
 				}
 				log.Printf("❌ %s 400 — bad request", provider.Name)
@@ -213,7 +208,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = fmt.Sprintf("%d", resp.StatusCode)
-				active.Set(i + 1)
 				continue
 
 			default:
@@ -238,8 +232,7 @@ func callProvider(body []byte, r *http.Request, p Provider) (*http.Response, err
 		}
 	}
 	newBody, _ := json.Marshal(reqMap)
-
-	req, err := http.NewRequest("POST", p.URL, bytes.NewBuffer(newBody))
+	req, err := http.NewRequestWithContext(r.Context(), "POST", p.URL, bytes.NewBuffer(newBody))
 	if err != nil {
 		return nil, err
 	}
