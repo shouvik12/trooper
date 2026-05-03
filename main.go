@@ -98,7 +98,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 
 			if provider.Name == "ollama" {
 				log.Printf("🪖  Routing to local model: %s", provider.Model)
+				log.Printf("🪖 Fallback: %s → ollama (%s) | request preserved", chain[0].Name, trigger)
+
 				w.Header().Set("X-Trooper-Provider", "ollama")
+				w.Header().Set("X-Trooper-Summary", fmt.Sprintf("%s → ollama (%s) | context ✓", chain[0].Name, trigger))
 				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
 				w.Header().Set("X-Trooper-Trigger", trigger)
 
@@ -144,6 +147,9 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			switch {
 			case resp.StatusCode == http.StatusOK:
 				log.Printf("✅ %s responded OK", provider.Name)
+				log.Printf("🪖 Provider: %s | direct ✓", provider.Name)
+				w.Header().Set("X-Trooper-Summary", fmt.Sprintf("%s (direct) ✓", provider.Name))
+
 				w.Header().Set("X-Trooper-Provider", provider.Name)
 				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
 				w.Header().Set("X-Trooper-Trigger", trigger)
