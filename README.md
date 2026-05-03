@@ -1,7 +1,9 @@
 # 🪖 Trooper
 
-> **Cloud fails. Trooper doesn't.**  
-> A single Go binary that falls back to local Ollama when your cloud LLM quota runs out — session context carried forward automatically.
+> **Zero-interruption AI infrastructure.**  
+> Cloud fails. Trooper doesn't.
+
+<img width="2070" height="582" alt="image" src="https://github.com/user-attachments/assets/6612a25b-f81b-43e3-87e2-251696795b01" />
 
 ---
 
@@ -222,18 +224,27 @@ curl http://localhost:3000/ ... -v 2>&1 | grep X-Trooper
 # Cloud served normally
 X-Trooper-Provider: claude
 X-Trooper-Fallback-Count: 0
-X-Trooper-Trigger:
+X-Trooper-Summary: claude (direct) ✓
 
 # Quota hit, fell back to Ollama
 X-Trooper-Provider: ollama
 X-Trooper-Fallback-Count: 1
-X-Trooper-Trigger: credit_balance
-
-# Two providers failed, Ollama caught it
-X-Trooper-Provider: ollama
-X-Trooper-Fallback-Count: 2
-X-Trooper-Trigger: 429
+X-Trooper-Summary: claude → ollama (credit_balance) | context ✓
 ```
+
+---
+
+## Circuit breaker
+
+Trooper tracks provider failures. If a provider fails 3 times within 60 seconds, Trooper skips it automatically and routes directly to the next provider — no wasted round trips.
+
+```
+⚡ Skipping claude — circuit open (3 fails in last 60s)
+🔄 Trying provider: ollama
+🪖 Fallback: claude → ollama () | request preserved
+```
+
+The circuit resets automatically after 60 seconds.
 
 ---
 
@@ -281,7 +292,7 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 |---|---|---|
 | `qwen2.5:3b` | 1.9GB | Default — fast, lightweight |
 | `qwen2.5:7b` | 4.7GB | Better quality, still fast |
-| `llama3.1:8b` | 4.9GB | Strong all-rounder |
+| `llama3.1:8b`  | 4.9GB | Strong all-rounder |
 | `mistral:7b` | 4.1GB | Good reasoning |
 
 ---
@@ -301,14 +312,20 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 - ✅ Zero dependencies — pure Go stdlib
 - ✅ Auto recovery — experimental (`AUTO_RECOVERY=true`)
 
-**V3 — Planned**
-- ⬜ Context checksum — verify context integrity across fallback
-- ⬜ Drift classification — LOW / PARTIAL / HIGH
-- ⬜ Replayability — re-run exact execution paths
-- ⬜ Confidence engine — composable score from model + checksum + degradation
-- ⬜ Policy layer — `prefer_local`, `max_cost`, `min_confidence`
-- ⬜ SQLite session persistence — survive restarts
-- ⬜ SITREP v2 — expose structured JSON to clients via response headers
+**V2.2 — Released**
+- ✅ Per-request provider selection — removes global race condition
+- ✅ Context cancellation — upstream calls respect client disconnect
+- ✅ Session store architecture — moved to main(), explicit dependency
+
+**V3.0 — Released**
+- ✅ Circuit breaker — skip providers that fail 3x in 60s
+- ✅ Zero-interruption log lines — `🪖 Fallback/Provider` visibility
+- ✅ X-Trooper-Summary header — observability out of the box
+
+**V3.1 — Planned**
+- ⬜ Context checksums — verify context integrity across fallback
+- ⬜ SITREP v2 — improved intent extraction on longer conversations
+- ⬜ Provider abstraction — per-provider adapters, no more if-chains
 - ⬜ Prometheus metrics endpoint
 
 ---
