@@ -10,8 +10,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+type ProviderState struct {
+	mu        sync.Mutex
+	FailCount int
+	LastFail  time.Time
+}
 
 func main() {
 	port := getEnv("TROOPER_PORT", "3000")
@@ -21,6 +28,10 @@ func main() {
 	quotaCodes := loadQuotaCodes()
 	active := &ActiveProvider{index: 0}
 	startHealthCheck(chain, active)
+	states := map[string]*ProviderState{}
+	for _, p := range chain {
+		states[p.Name] = &ProviderState{}
+	}
 
 	// Warn if no cloud provider configured
 	hasCloud := false
@@ -40,7 +51,7 @@ func main() {
 	}
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
 	store := NewSessionStore()
-	http.HandleFunc("/", makeHandler(chain, quotaCodes, active, store))
+	http.HandleFunc("/", makeHandler(chain, quotaCodes, active, store, states))
 	if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
@@ -62,8 +73,7 @@ func loadQuotaCodes() map[int]bool {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvider, store *SessionStore) http.HandlerFunc {
-
+func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvider, store *SessionStore, states map[string]*ProviderState) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -94,6 +104,15 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		// Try each provider starting from active index
 		for i := 0; i < len(chain); i++ {
 			provider := chain[i]
+			// Circuit breaker — skip if provider is known to be down
+			state := states[provider.Name]
+			state.mu.Lock()
+			shouldSkip := state.FailCount >= 3 && time.Since(state.LastFail) < 60*time.Second
+			state.mu.Unlock()
+			if shouldSkip {
+				log.Printf("⚡ Skipping %s — circuit open (%d fails in last 60s)", provider.Name, state.FailCount)
+				continue
+			}
 			log.Printf("🔄 Trying provider: %s", provider.Name)
 
 			if provider.Name == "ollama" {
@@ -141,6 +160,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				log.Printf("⚠️  %s network error: %v — trying next", provider.Name, err)
 				fallbackCount++
 				trigger = "network_error"
+				states[provider.Name].mu.Lock()
+				states[provider.Name].FailCount++
+				states[provider.Name].LastFail = time.Now()
+				states[provider.Name].mu.Unlock()
 				continue
 			}
 
@@ -148,6 +171,9 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			case resp.StatusCode == http.StatusOK:
 				log.Printf("✅ %s responded OK", provider.Name)
 				log.Printf("🪖 Provider: %s | direct ✓", provider.Name)
+				states[provider.Name].mu.Lock()
+				states[provider.Name].FailCount = 0
+				states[provider.Name].mu.Unlock()
 				w.Header().Set("X-Trooper-Summary", fmt.Sprintf("%s (direct) ✓", provider.Name))
 
 				w.Header().Set("X-Trooper-Provider", provider.Name)
@@ -162,6 +188,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "401"
+				states[provider.Name].mu.Lock()
+				states[provider.Name].FailCount++
+				states[provider.Name].LastFail = time.Now()
+				states[provider.Name].mu.Unlock()
 				continue
 
 			case resp.StatusCode == 429:
@@ -183,6 +213,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "429"
+				states[provider.Name].mu.Lock()
+				states[provider.Name].FailCount++
+				states[provider.Name].LastFail = time.Now()
+				states[provider.Name].mu.Unlock()
 				continue
 
 			case resp.StatusCode == 402:
@@ -191,6 +225,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = "402"
+				states[provider.Name].mu.Lock()
+				states[provider.Name].FailCount++
+				states[provider.Name].LastFail = time.Now()
+				states[provider.Name].mu.Unlock()
 				continue
 
 			case resp.StatusCode == 400:
@@ -200,6 +238,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 					log.Printf("⚠️  %s 400 — credit balance too low, trying next", provider.Name)
 					fallbackCount++
 					trigger = "credit_balance"
+					states[provider.Name].mu.Lock()
+					states[provider.Name].FailCount++
+					states[provider.Name].LastFail = time.Now()
+					states[provider.Name].mu.Unlock()
 					continue
 				}
 				log.Printf("❌ %s 400 — bad request", provider.Name)
@@ -213,6 +255,10 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				resp.Body.Close()
 				fallbackCount++
 				trigger = fmt.Sprintf("%d", resp.StatusCode)
+				states[provider.Name].mu.Lock()
+				states[provider.Name].FailCount++
+				states[provider.Name].LastFail = time.Now()
+				states[provider.Name].mu.Unlock()
 				continue
 
 			default:
