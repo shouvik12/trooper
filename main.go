@@ -101,9 +101,22 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		fallbackCount := 0
 		trigger := ""
 
-		// Try each provider starting from active index
+		// Extract latest user message for classification
+		latestMessage := extractLatestUserMessage(body)
+		simple := isSimpleTurn(latestMessage)
+		if simple {
+			log.Printf("🧠 Simple turn detected — routing to local")
+		}
+
+		// Try each provider
 		for i := 0; i < len(chain); i++ {
 			provider := chain[i]
+
+			// Skip cloud providers if simple turn
+			if simple && provider.Name != "ollama" {
+				continue
+			}
+
 			// Circuit breaker — skip if provider is known to be down
 			state := states[provider.Name]
 			state.mu.Lock()
@@ -116,8 +129,14 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			log.Printf("🔄 Trying provider: %s", provider.Name)
 
 			if provider.Name == "ollama" {
-				log.Printf("🪖  Routing to local model: %s", provider.Model)
-				log.Printf("🪖 Fallback: %s → ollama (%s) | request preserved", chain[0].Name, trigger)
+				if simple && fallbackCount == 0 {
+					log.Printf("🪖 Local: ollama (simple turn)")
+					w.Header().Set("X-Trooper-Decision", "ollama (simple turn) | cloud skipped")
+					w.Header().Set("X-Trooper-Tokens-Saved", fmt.Sprintf("%d", estimateTokens(latestMessage)))
+				} else {
+					log.Printf("🪖 Fallback: %s → ollama (%s) | context preserved", chain[0].Name, trigger)
+					w.Header().Set("X-Trooper-Decision", fmt.Sprintf("ollama (fallback: %s)", trigger))
+				}
 
 				w.Header().Set("X-Trooper-Provider", "ollama")
 				w.Header().Set("X-Trooper-Summary", fmt.Sprintf("%s → ollama (%s) | context ✓", chain[0].Name, trigger))
@@ -175,7 +194,6 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				states[provider.Name].FailCount = 0
 				states[provider.Name].mu.Unlock()
 				w.Header().Set("X-Trooper-Summary", fmt.Sprintf("%s (direct) ✓", provider.Name))
-
 				w.Header().Set("X-Trooper-Provider", provider.Name)
 				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
 				w.Header().Set("X-Trooper-Trigger", trigger)
@@ -492,7 +510,6 @@ func extractForwardPhrase(words []string, i int) string {
 		}
 		phraseWords = append(phraseWords, w)
 
-		// Stop early if sentence likely ends
 		if strings.HasSuffix(words[j], ".") || strings.HasSuffix(words[j], ",") {
 			break
 		}
@@ -531,7 +548,6 @@ type SITREP struct {
 }
 
 func extractIntent(messages []map[string]string, latestUser string) (string, string, float64) {
-	// Step 1 — first middle message
 	if len(messages) > 0 {
 		content := strings.ToLower(messages[0]["content"])
 		for _, verb := range intentVerbs {
@@ -546,7 +562,6 @@ func extractIntent(messages []map[string]string, latestUser string) (string, str
 		}
 	}
 
-	// Step 2 — latest user message
 	if latestUser != "" {
 		content := strings.ToLower(latestUser)
 		for _, verb := range intentVerbs {
@@ -561,7 +576,6 @@ func extractIntent(messages []map[string]string, latestUser string) (string, str
 		}
 	}
 
-	// Step 3 — keyword frequency
 	freq := map[string]int{}
 	for _, m := range messages {
 		words := strings.Fields(strings.ToLower(m["content"]))
@@ -603,7 +617,6 @@ func extractEntities(messages []map[string]string) []string {
 				continue
 			}
 
-			// Tier 1 — named tools
 			for _, t1 := range tier1Entities {
 				if lower == t1 {
 					tier1 = append(tier1, clean)
@@ -614,7 +627,6 @@ func extractEntities(messages []map[string]string) []string {
 				continue
 			}
 
-			// File names
 			if strings.HasSuffix(lower, ".go") ||
 				strings.HasSuffix(lower, ".yaml") ||
 				strings.HasSuffix(lower, ".yml") ||
@@ -624,14 +636,12 @@ func extractEntities(messages []map[string]string) []string {
 				continue
 			}
 
-			// Env vars (ALL_CAPS_WITH_UNDERSCORE)
 			if clean == strings.ToUpper(clean) && strings.Contains(clean, "_") && len(clean) > 3 {
 				tier1 = append(tier1, clean)
 				seen[lower] = true
 				continue
 			}
 
-			// Error codes
 			if code, err := strconv.Atoi(clean); err == nil {
 				if code == 400 || code == 401 || code == 429 || code == 402 || code == 529 {
 					tier2 = append(tier2, clean)
@@ -640,14 +650,12 @@ func extractEntities(messages []map[string]string) []string {
 				}
 			}
 
-			// Numbers with units
 			if strings.HasSuffix(lower, "k") || strings.HasSuffix(lower, "hr") || strings.HasSuffix(lower, "mb") {
 				tier2 = append(tier2, clean)
 				seen[lower] = true
 				continue
 			}
 
-			// Tier 3 — generic technical
 			for _, t3 := range tier3Entities {
 				if lower == t3 {
 					tier3 = append(tier3, clean)
@@ -672,7 +680,6 @@ func extractSignals(messages []map[string]string) (openLoops, recentActions, res
 	seenActions := map[string]bool{}
 	seenResolved := map[string]bool{}
 
-	// Focus on last 6 turns
 	startIdx := 0
 	if len(messages) > 6 {
 		startIdx = len(messages) - 6
@@ -846,13 +853,11 @@ func buildContext(history []map[string]string) []map[string]string {
 		return history
 	}
 
-	// Count total tokens
 	totalTokens := 0
 	for _, m := range history {
 		totalTokens += estimateTokens(m["content"])
 	}
 
-	// No compaction needed
 	if totalTokens <= contextWindow {
 		log.Printf("📦  No compaction needed — %d tokens fits within %d budget", totalTokens, contextWindow)
 		return history
@@ -860,7 +865,6 @@ func buildContext(history []map[string]string) []map[string]string {
 
 	log.Printf("📦  Context compaction triggered — %d tokens exceeds %d budget", totalTokens, contextWindow)
 
-	// ── Anchor — first 2 messages ─────────────────────────────────────────────
 	anchorMessages := []map[string]string{}
 	anchorTokens := 0
 	anchorEnd := 0
@@ -876,7 +880,6 @@ func buildContext(history []map[string]string) []map[string]string {
 		anchorEnd = len(anchorMessages)
 	}
 
-	// ── Tail — last N turns within budget ─────────────────────────────────────
 	recentMessages := []map[string]string{}
 	recentTokens := 0
 	recentStart := len(history)
@@ -891,7 +894,6 @@ func buildContext(history []map[string]string) []map[string]string {
 		recentStart = i
 	}
 
-	// ── SITREP — extract from middle ──────────────────────────────────────────
 	middleMessages := history[anchorEnd:recentStart]
 
 	latestUser := ""
@@ -905,7 +907,6 @@ func buildContext(history []map[string]string) []map[string]string {
 	sitrep := buildSITREP(middleMessages, latestUser)
 	sitrepText := formatSITREP(sitrep)
 
-	// ── Assemble ──────────────────────────────────────────────────────────────
 	result := []map[string]string{}
 	result = append(result, anchorMessages...)
 	result = append(result, map[string]string{
@@ -914,7 +915,6 @@ func buildContext(history []map[string]string) []map[string]string {
 	})
 	result = append(result, recentMessages...)
 
-	// ── Log ───────────────────────────────────────────────────────────────────
 	totalUsed := anchorTokens + estimateTokens(sitrepText) + recentTokens
 	log.Printf("📦  Context compaction complete")
 	log.Printf("    Total turns    : %d", len(history))
@@ -939,6 +939,19 @@ func extractFallbackText(parsed map[string]interface{}) string {
 	}
 	if text, ok := parsed["response"].(string); ok {
 		return text
+	}
+	return ""
+}
+
+func extractLatestUserMessage(body []byte) string {
+	messages, err := extractMessages(body)
+	if err != nil || len(messages) == 0 {
+		return ""
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i]["role"] == "user" {
+			return messages[i]["content"]
+		}
 	}
 	return ""
 }
