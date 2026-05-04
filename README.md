@@ -141,6 +141,20 @@ Trooper starts on `http://127.0.0.1:3000`. Binds to localhost by default — you
 
 ---
 
+## Running tests
+
+```bash
+go test ./... -v
+```
+
+Trooper has a full test suite covering:
+- Turn classifier — simple vs complex detection
+- Code detection
+- Context compaction — anchor, SITREP, tail preservation
+- Token estimation
+
+All tests must pass before any contribution is merged.
+
 ## Usage
 
 Point your existing client at Trooper — nothing else changes:
