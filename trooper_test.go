@@ -297,7 +297,6 @@ func TestBuildContext_TailPreserved(t *testing.T) {
 	}
 }
 
-
 func TestBuildContext_SITREPFormat(t *testing.T) {
 	history := []map[string]string{}
 	for i := 0; i < 70; i++ {
@@ -311,8 +310,7 @@ func TestBuildContext_SITREPFormat(t *testing.T) {
 		})
 	}
 
-	
-result := buildContext(history)
+	result := buildContext(history)
 
 	for _, m := range result {
 		if m["role"] == "system" {
