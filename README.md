@@ -1,38 +1,61 @@
 # 🪖 Trooper
 
-> **Zero-interruption AI infrastructure.**  
-> Cloud fails. Trooper doesn't.
+> **Your LLM didn't crash — it fell back and kept going.**
+
+Quota errors should be invisible.
+
+As LLM APIs get rate-limited and expensive, local fallback isn't optional anymore.
+
+```
+→ Claude fails       → continues on Ollama
+→ Simple prompts     → never hit the cloud
+→ Every response     → shows tokens saved
+```
+
+**Trooper is a circuit breaker + router + context engine for LLMs.**
 
 <img width="2070" height="582" alt="image" src="https://github.com/user-attachments/assets/e44f1843-5a6b-4f52-bd3e-37fffadb0b85" />
 
+---
+
+## What you see
+
+Every response tells you exactly what happened — no dashboards, no setup:
+
+```bash
+# Simple question → Ollama handled it, cloud never contacted
+X-Trooper-Provider: ollama
+X-Trooper-Decision: ollama (simple turn) | cloud skipped
+X-Trooper-Session-Saved: 42 tokens
+
+# Complex question → Claude handled it
+X-Trooper-Provider: claude
+X-Trooper-Summary: claude (direct) ✓
+
+# Claude quota hit → fell back to Ollama, context preserved
+X-Trooper-Provider: ollama
+X-Trooper-Decision: ollama (fallback: credit_balance)
+X-Trooper-Session-Saved: 42 tokens
+X-Trooper-Summary: claude → ollama (credit_balance) | context ✓
+```
+
+`X-Trooper-Session-Saved` accumulates across the session — every turn routed locally instead of to a paid API adds to the count.
 
 ---
 
 ## What Trooper is
 
-Trooper is a lightweight proxy that sits between your app and your cloud LLM providers. When Claude, Gemini, or OpenAI hits a quota limit or fails, Trooper automatically falls back to a local Ollama instance and carries the session context with it.
+Trooper is a drop-in proxy for LLM apps. When cloud models fail — quota, rate limits, outages — it automatically falls back to your local Ollama instance while preserving full conversation context.
 
-Your app never changes. The conversation continues.
-
-```
-Your App → Trooper → Claude  ✅  (works normally)
-                   → quota hit ⚡
-                   → Ollama (local) 🪖  (session continues)
-```
+No retries. No crashes. No lost sessions. ⏱ Runs in under 60 seconds.
 
 ---
 
 ## Why not LiteLLM or Bifrost
 
-LiteLLM and Bifrost are excellent tools — but they solve a different problem.
+LiteLLM and Bifrost route between cloud providers.
 
-**LiteLLM** is a Python gateway for teams routing between 100+ cloud providers. Setup requires a Python environment, venv, and config files. Its fallback is always another cloud provider — your data still leaves your machine.
-
-**Bifrost** is enterprise-scale infrastructure for organisations managing multiple cloud accounts and compliance requirements.
-
-**Trooper is for individual developers and small teams** who run local models on their own hardware and want cloud quota exhaustion to just be handled — without setting up a full gateway stack.
-
-The fundamental difference:
+Trooper is built for a different failure mode: when the cloud stops working.
 
 | | LiteLLM / Bifrost | Trooper |
 |---|---|---|
@@ -46,11 +69,30 @@ When LiteLLM falls back, your data goes to another cloud. When Trooper falls bac
 
 ---
 
+## Smart routing
+
+Trooper decides when the cloud is overkill.
+
+> **The classifier is rule-based and deterministic — no LLM call, no latency, no cost to classify.** Most routing tools call an LLM to decide routing. Trooper doesn't.
+
+Simple, stateless requests route directly to your local Ollama — no API call, no cost:
+
+```
+"how many days in a week"  →  Ollama directly 🪖  (cloud never contacted)
+"explain why goroutines…"  →  Claude ✅           (needs reasoning)
+```
+
+**Routes to Ollama:** factual lookups, definitions, formatting, conversation meta, short stateless summaries
+
+**Always goes to Claude:** reasoning, judgment, multi-step tasks, context-aware summaries, code, messages over 20 words
+
+---
+
 ## How Trooper handles context
 
-A naive proxy would route the next request to Ollama cold — with no knowledge of what was discussed. The conversation breaks.
+The hard part of fallback isn't switching models — it's keeping context.
 
-Trooper maintains server-side session history and uses a three-layer context compaction system to carry the session forward when the budget is exceeded:
+Trooper solves that with a 3-layer compaction system:
 
 ```
 ANCHOR  (~10%)  — First 2 turns verbatim, never dropped
@@ -59,15 +101,7 @@ TAIL    (~70%)  — Last N turns verbatim
                   Total <= 6144 tokens (configurable)
 ```
 
-The SITREP is extracted automatically from the middle turns using rule-based signal classification — no LLM call needed. It looks like this in practice (from a real test session):
-
-```
-SITREP: intent="building a go proxy called trooper that falls back to local"
-        stage=in_progress confidence=1.00
-        open=5 actions=5 resolved=1
-```
-
-The full JSON sent to Ollama:
+The SITREP is extracted automatically — no LLM call needed. From a real session:
 
 ```json
 [TROOPER_SITREP]{
@@ -86,31 +120,27 @@ Compaction triggers automatically when the session exceeds the token budget:
 
 ```
 📦  Context compaction triggered — 1532 tokens exceeds 6144 budget
-    Total turns    : 5
     Anchor turns   : 2 (~180 tokens)
     Middle turns   : 2 → SITREP (~148 tokens)
     Recent turns   : 1 (~36 tokens)
     Tokens used    : 364 / 6144
-    SITREP         : intent="building a go proxy" stage=in_progress
-                     confidence=1.00 open=5 actions=5 resolved=1
 ```
 
-**What this actually means:** Ollama receives a compressed picture of the conversation — topic, intent, what's resolved, what's pending, and recent actions. It responds in context rather than starting cold. Quality of continuation depends on your local model — a 3B model will follow the topic but may not match the precision of a larger model.
-
-> **Honest note:** Compaction is lossy by design. The SITREP preserves intent and state — not verbatim history. Signal extraction is rule-based, not LLM-generated, so phrase quality varies. For most conversational use cases this is sufficient. For precision-critical workflows, keep sessions short or increase `CONTEXT_WINDOW`.
+> **Honest note:** Compaction is lossy by design. The SITREP preserves intent and state — not verbatim history. For precision-critical workflows, keep sessions short or increase `CONTEXT_WINDOW`.
 
 ---
 
 ## Quickstart
 
+⏱ Runs in under 60 seconds.
+
 ### Prerequisites
-- Ollama running locally with at least one model pulled
 
 ```bash
 ollama pull qwen2.5:3b
 ```
 
-> 💡 **Eliminate cold-start latency on fallback** — set `OLLAMA_KEEP_ALIVE=24h` in your Ollama systemd service to keep the model loaded all day. Without this, the first fallback request after idle takes 3–5s for 7B models and up to 20s for 72B models. Add this to your systemd service file:
+> 💡 **Eliminate cold-start latency** — set `OLLAMA_KEEP_ALIVE=24h` in your Ollama systemd service. Without this, the first fallback after idle takes 3–5s for 7B models, up to 20s for 72B. Add to your systemd service:
 > ```
 > Environment="OLLAMA_KEEP_ALIVE=24h"
 > ```
@@ -120,10 +150,8 @@ ollama pull qwen2.5:3b
 ```bash
 git clone https://github.com/shouvik12/trooper
 cd trooper
-
 cp .env.example .env
 # edit .env — set CLAUDE_API_KEY
-
 docker compose up
 ```
 
@@ -132,28 +160,13 @@ docker compose up
 ```bash
 git clone https://github.com/shouvik12/trooper
 cd trooper
-
 export CLAUDE_API_KEY=sk-ant-...
-go run main.go providers.go
+go run main.go providers.go classifier.go
 ```
 
 Trooper starts on `http://127.0.0.1:3000`. Binds to localhost by default — your API keys are not exposed on the network.
 
 ---
-
-## Running tests
-
-```bash
-go test ./... -v
-```
-
-Trooper has a full test suite covering:
-- Turn classifier — simple vs complex detection
-- Code detection
-- Context compaction — anchor, SITREP, tail preservation
-- Token estimation
-
-All tests must pass before any contribution is merged.
 
 ## Usage
 
@@ -162,7 +175,6 @@ Point your existing client at Trooper — nothing else changes:
 **Python + Anthropic SDK:**
 ```python
 import anthropic
-
 client = anthropic.Anthropic(
     api_key="your-key",
     base_url="http://localhost:3000",  # only change
@@ -172,7 +184,6 @@ client = anthropic.Anthropic(
 **Python + OpenAI SDK:**
 ```python
 from openai import OpenAI
-
 client = OpenAI(
     api_key="your-key",
     base_url="http://localhost:3000",  # only change
@@ -184,13 +195,10 @@ client = OpenAI(
 curl http://localhost:3000/ \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: my-session" \
-  -d '{
-    "model": "claude-3-5-haiku-20241022",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+  -d '{"model": "claude-3-5-haiku-20241022", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-Pass `X-Session-ID` to track named sessions. Without it, Trooper assigns a unique auto session per request — no context bleed between users.
+Pass `X-Session-ID` to track named sessions. Without it, Trooper assigns a unique auto session per request.
 
 ---
 
@@ -199,20 +207,9 @@ Pass `X-Session-ID` to track named sessions. Without it, Trooper assigns a uniqu
 Trooper builds the chain from environment variables. Ollama is always last.
 
 ```bash
-# Claude only (default)
-CLAUDE_API_KEY=sk-ant-...
-# Chain: Claude → Ollama
-
-# Claude + Gemini
-CLAUDE_API_KEY=sk-ant-...
-GEMINI_API_KEY=AIza...
-# Chain: Claude → Gemini → Ollama
-
-# Full chain
-CLAUDE_API_KEY=sk-ant-...
-GEMINI_API_KEY=AIza...
-OPENAI_API_KEY=sk-...
-# Chain: Claude → Gemini → OpenAI → Ollama
+CLAUDE_API_KEY=sk-ant-...                          # Chain: Claude → Ollama
+CLAUDE_API_KEY=sk-ant-...  GEMINI_API_KEY=AIza...  # Chain: Claude → Gemini → Ollama
+CLAUDE_API_KEY=sk-ant-...  OPENAI_API_KEY=sk-...   # Chain: Claude → OpenAI → Ollama
 ```
 
 ---
@@ -233,19 +230,24 @@ OPENAI_API_KEY=sk-...
 
 ## Response headers
 
-Every response tells you exactly what happened:
-
 ```bash
 curl http://localhost:3000/ ... -v 2>&1 | grep X-Trooper
+
+# Simple turn — cloud never contacted
+X-Trooper-Provider: ollama
+X-Trooper-Decision: ollama (simple turn) | cloud skipped
+X-Trooper-Session-Saved: 14 tokens
 
 # Cloud served normally
 X-Trooper-Provider: claude
 X-Trooper-Fallback-Count: 0
 X-Trooper-Summary: claude (direct) ✓
 
-# Quota hit, fell back to Ollama
+# Quota hit — fell back, context preserved
 X-Trooper-Provider: ollama
 X-Trooper-Fallback-Count: 1
+X-Trooper-Decision: ollama (fallback: credit_balance)
+X-Trooper-Session-Saved: 14 tokens
 X-Trooper-Summary: claude → ollama (credit_balance) | context ✓
 ```
 
@@ -253,32 +255,32 @@ X-Trooper-Summary: claude → ollama (credit_balance) | context ✓
 
 ## Circuit breaker
 
-Trooper tracks provider failures. If a provider fails 3 times within 60 seconds, Trooper skips it automatically and routes directly to the next provider — no wasted round trips.
+If a provider fails 3 times within 60 seconds, Trooper skips it automatically — no wasted round trips. Resets after 60 seconds.
 
 ```
 ⚡ Skipping claude — circuit open (3 fails in last 60s)
 🔄 Trying provider: ollama
-🪖 Fallback: claude → ollama () | request preserved
 ```
-
-The circuit resets automatically after 60 seconds.
 
 ---
 
 ## Auto recovery
 
-When a cloud provider comes back online, Trooper can silently route back to it. Disabled by default.
+```bash
+AUTO_RECOVERY=true go run main.go providers.go classifier.go
+```
+
+Health checks use a free `GET /models` endpoint — no inference requests, no cost. Trooper silently routes back to the primary provider when it recovers.
+
+---
+
+## Running tests
 
 ```bash
-AUTO_RECOVERY=true go run main.go providers.go
+go test ./... -v
 ```
 
-Health checks use a free `GET /models` endpoint — no inference requests, no cost.
-
-```
-🏥 Auto recovery enabled — checking every 60 seconds
-🔄 Auto recovery — switching back to claude
-```
+Covers: turn classifier, code detection, context compaction, token estimation. All tests must pass before any contribution is merged.
 
 ---
 
@@ -287,7 +289,7 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 | Variable | Default | Description |
 |---|---|---|
 | `CLAUDE_API_KEY` | — | Anthropic API key |
-| `CLAUDE_MODEL` | — | Default Claude model (request model takes priority if set) |
+| `CLAUDE_MODEL` | — | Default Claude model |
 | `GEMINI_API_KEY` | — | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Default Gemini model |
 | `OPENAI_API_KEY` | — | OpenAI API key |
@@ -297,9 +299,9 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 | `CONTEXT_WINDOW` | `6144` | Token budget for context compaction |
 | `QUOTA_STATUS_CODES` | `429,402,529,400` | HTTP codes that trigger fallback |
 | `TROOPER_PORT` | `3000` | Port Trooper listens on |
-| `TROOPER_BIND` | `127.0.0.1` | Bind address — set `0.0.0.0` only if you need network access |
+| `TROOPER_BIND` | `127.0.0.1` | Bind address |
 | `AUTO_RECOVERY` | `false` | Enable automatic recovery to primary provider |
-| `OLLAMA_KEEP_ALIVE` | `5m` (Ollama default) | Set `24h` in your Ollama systemd service to keep model loaded — eliminates cold-start latency on fallback |
+| `OLLAMA_KEEP_ALIVE` | `5m` | Set `24h` in systemd to eliminate cold-start latency |
 
 ---
 
@@ -316,34 +318,21 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 
 ## Roadmap
 
-**V2 — Released**
-- ✅ Cloud → Ollama fallback with session continuity
-- ✅ Context compaction — Anchor + SITREP + Tail
-- ✅ Rule-based SITREP extraction — intent, stage, open loops, actions, resolved
-- ✅ Live streaming — tokens pipe through in real time
-- ✅ Health check — free `GET /models`, no inference cost
-- ✅ Smart fallback — 429 retry, 402 immediate, credit balance detection
-- ✅ Response headers — provider, fallback count, trigger
-- ✅ Session TTL — 24hr expiry, 10min cleanup sweep
-- ✅ Secure by default — binds to `127.0.0.1`
-- ✅ Zero dependencies — pure Go stdlib
-- ✅ Auto recovery — experimental (`AUTO_RECOVERY=true`)
-
-**V2.2 — Released**
-- ✅ Per-request provider selection — removes global race condition
-- ✅ Context cancellation — upstream calls respect client disconnect
-- ✅ Session store architecture — moved to main(), explicit dependency
+**V3.1 — Released**
+- ✅ Smart routing — simple turns route to Ollama directly, cloud never contacted
+- ✅ X-Trooper-Session-Saved header — cumulative tokens saved per session
+- ✅ X-Trooper-Decision header — routing decision on every response
+- ✅ Deterministic classifier — no LLM call to route, zero added latency
 
 **V3.0 — Released**
 - ✅ Circuit breaker — skip providers that fail 3x in 60s
-- ✅ Zero-interruption log lines — `🪖 Fallback/Provider` visibility
-- ✅ X-Trooper-Summary header — observability out of the box
+- ✅ Zero-interruption log lines
+- ✅ X-Trooper-Summary header
 
-**V3.1 — Planned**
-- ⬜ Context checksums — verify context integrity across fallback
-- ⬜ SITREP v2 — improved intent extraction on longer conversations
-- ⬜ Provider abstraction — per-provider adapters, no more if-chains
-- ⬜ Prometheus metrics endpoint
+**V2 / V2.2 — Released**
+- ✅ Cloud → Ollama fallback with session continuity
+- ✅ Context compaction — Anchor + SITREP + Tail
+- ✅ Streaming, health check, auto recovery, zero dependencies
 
 ---
 
