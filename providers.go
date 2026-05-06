@@ -48,6 +48,7 @@ type SessionState struct {
 	Anchor   []map[string]string // Turns 1-2 (Immortal context)
 	SITREP   string              // Rolling distilled summary
 	Tail     []map[string]string // Recent turns
+        TokensSaved int  // cumulative tokens saved by routing to Ollama
 	LastSeen time.Time
 	mu       sync.Mutex
 }
@@ -75,6 +76,18 @@ func (s *SessionStore) cleanup() {
 		}
 		s.mu.Unlock()
 	}
+}
+func (s *SessionStore) AddTokensSaved(sessionID string, tokens int) int {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.TokensSaved += tokens
+	return state.TokensSaved
 }
 
 // Append manages the rolling window: moving older Tail turns into SITREP

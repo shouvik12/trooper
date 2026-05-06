@@ -129,15 +129,15 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			log.Printf("🔄 Trying provider: %s", provider.Name)
 
 			if provider.Name == "ollama" {
+				saved := store.AddTokensSaved(sessionID, estimateTokens(latestMessage))
 				if simple && fallbackCount == 0 {
-					log.Printf("🪖 Local: ollama (simple turn)")
+					log.Printf("🪖 Local: ollama (simple turn) | session saved: %d tokens", saved)
 					w.Header().Set("X-Trooper-Decision", "ollama (simple turn) | cloud skipped")
-					w.Header().Set("X-Trooper-Tokens-Saved", fmt.Sprintf("%d", estimateTokens(latestMessage)))
 				} else {
-					log.Printf("🪖 Fallback: %s → ollama (%s) | context preserved", chain[0].Name, trigger)
+					log.Printf("🪖 Fallback: %s → ollama (%s) | context preserved | session saved: %d tokens", chain[0].Name, trigger, saved)
 					w.Header().Set("X-Trooper-Decision", fmt.Sprintf("ollama (fallback: %s)", trigger))
 				}
-
+				w.Header().Set("X-Trooper-Session-Saved", fmt.Sprintf("%d tokens", saved))
 				w.Header().Set("X-Trooper-Provider", "ollama")
 				w.Header().Set("X-Trooper-Summary", fmt.Sprintf("%s → ollama (%s) | context ✓", chain[0].Name, trigger))
 				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
@@ -152,6 +152,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 						http.Error(w, `{"error":"all providers failed"}`, http.StatusBadGateway)
 						return
 					}
+
 					// Store assistant response in session
 					var parsedResp map[string]interface{}
 					if json.Unmarshal(fallbackResp, &parsedResp) == nil {

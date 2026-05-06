@@ -60,7 +60,7 @@ var safePatterns = []string{
 	// Trivial
 	"spell ", "abbreviation for",
 	// Conversation meta
-	"summarise", "summarize", "what have we covered",
+        "what have we covered",
 	"what did we discuss", "repeat that", "say that again",
 	"remind me", "give me an example",
 }
@@ -79,4 +79,6 @@ var riskPatterns = []string{
 	// Context-heavy
 	"based on what we said", "given our discussion",
 	"in my case", "for my use case",
+        // Summary (context-dependent — default to Claude)
+        "summarise", "summarize",
 }

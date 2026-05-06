@@ -12,8 +12,8 @@ func TestIsSimpleTurn_SimplePatterns(t *testing.T) {
 		expected bool
 	}{
 		{"how many days in a week", true},
-		{"summarise what we have covered", true},
-		{"summarize our discussion", true},
+		{"summarise what we have covered", false},
+		{"summarize our discussion", false},
 		{"what does EOF mean", true},
 		{"define recursion", true},
 		{"fix the grammar in this sentence", true},
