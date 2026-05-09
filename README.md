@@ -340,6 +340,9 @@ Covers: turn classifier, code detection, context compaction, token estimation. A
 
 - Featured in [Agent Brief](https://news.agentcommunity.org/issues/2026-04-22-the-agentic-stack) by agentcommunity.org — curated alongside Anthropic, Shopify MCP, and LangGraph updates (April 2026)
 - Featured on [@github_unpacked](https://www.instagram.com/reel/DXfDrCOCNHE/) — Instagram reel with 76 saves
+- Featured on [PatentLLM](https://media.patentllm.org/news/local-ai/qwen3-6-27b-local-inference-on-rtx-3090-with-native-vllm-oll-20260502) — covered alongside Qwen3.6-27B RTX 3090 local inference story (May 2026)
+- Featured on [dev.to](https://dev.to/soytuber/qwen36-27b-local-inference-on-rtx-3090-with-native-vllm-ollama-fallback-2jgg) — local AI tooling roundup (May 2026)
+- Cited by [kylebrodeur](https://github.com/kylebrodeur) as inspiration for *"robust, transparent HTTP rate-limit fallback triggers"*
 
 ---
 
