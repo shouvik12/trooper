@@ -295,7 +295,9 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 
 func callProvider(body []byte, r *http.Request, p Provider) (*http.Response, error) {
 	var reqMap map[string]interface{}
-	json.Unmarshal(body, &reqMap)
+	if err := json.Unmarshal(body, &reqMap); err != nil || reqMap == nil {
+		reqMap = make(map[string]interface{})
+	}
 	if p.Model != "" {
 		if _, hasModel := reqMap["model"]; !hasModel {
 			reqMap["model"] = p.Model
