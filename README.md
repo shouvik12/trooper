@@ -65,9 +65,6 @@ No lost context, no starting over.
 **Privacy-conscious developers** — use `x_force_local` to keep
 sensitive requests off the cloud without interrupting the session.
 
-**Heavy Claude users** — run Open WebUI in front of Trooper for a
-chat interface that never dies when quota hits.
-
 ---
 
 ## Why not LiteLLM or Bifrost
