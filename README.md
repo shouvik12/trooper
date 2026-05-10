@@ -276,16 +276,39 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 
 ## Per-request local routing
 
-Add `x_force_local: true` to any request body to route that specific 
+Add `x_force_local: true` to any request body to route that specific
 request to Ollama, regardless of complexity or provider availability.
 
 Use for:
 - Privacy — keep sensitive requests off the cloud
-- Cost control — force local for expensive operations  
+- Cost control — force local for expensive operations
 - Offline mode — bypass cloud entirely mid-session
 
-The session context is preserved. Cloud routing resumes on the next 
+The session context is preserved. Cloud routing resumes on the next
 request without the flag.
+
+**Example:**
+
+```bash
+# Turn 1 & 2 — Claude handles it (cloud)
+curl http://localhost:3000/v1/chat/completions \
+  -H "X-Session-ID: dev-session" \
+  -d '{"model": "claude-sonnet-4-5", "max_tokens": 1024,
+       "messages": [{"role": "user", "content": "Help me design our auth layer"}]}'
+
+# Turn 3 — sensitive detail, developer keeps it local
+curl http://localhost:3000/v1/chat/completions \
+  -H "X-Session-ID: dev-session" \
+  -d '{"model": "claude-sonnet-4-5", "max_tokens": 1024,
+       "x_force_local": true,
+       "messages": [{"role": "user", "content": "Our payment vault uses..."}]}'
+```
+
+Trooper log on Turn 3:
+```
+🔒 Developer requested local-only (x_force_local) — skipping cloud
+🔒 Local: ollama (force_local) | privacy mode | session saved: 28 tokens
+```
 
 ## Running tests
 
@@ -315,7 +338,6 @@ Covers: turn classifier, code detection, context compaction, token estimation. A
 | `TROOPER_BIND` | `127.0.0.1` | Bind address |
 | `AUTO_RECOVERY` | `false` | Enable automatic recovery to primary provider |
 | `OLLAMA_KEEP_ALIVE` | `5m` | Set `24h` in systemd to eliminate cold-start latency |
-| `FORCE_LOCAL` | `false` | Set `true` at startup to skip all cloud providers |
 
 ---
 
