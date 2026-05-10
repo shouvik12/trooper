@@ -51,6 +51,25 @@ No retries. No crashes. No lost sessions. ⏱ Runs in under 60 seconds.
 
 ---
 
+## Who uses Trooper
+
+**App developers** — your users never see quota errors. Trooper fails
+over to local Ollama transparently while your app keeps running.
+
+**Agent builders** — agent loops survive quota limits mid-task. 
+Context is preserved so the agent continues exactly where it left off.
+
+**Claude Code / Cursor users** — coding sessions survive quota hits.
+No lost context, no starting over.
+
+**Privacy-conscious developers** — use `x_force_local` to keep
+sensitive requests off the cloud without interrupting the session.
+
+**Heavy Claude users** — run Open WebUI in front of Trooper for a
+chat interface that never dies when quota hits.
+
+---
+
 ## Why not LiteLLM or Bifrost
 
 LiteLLM and Bifrost route between cloud providers.
