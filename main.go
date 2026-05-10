@@ -84,6 +84,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		var reqMap map[string]interface{}
 		json.Unmarshal(body, &reqMap)
 		wantsStream, _ := reqMap["stream"].(bool)
+		forceLocal, _ := reqMap["x_force_local"].(bool)
 
 		// Session handling
 		sessionID := r.Header.Get("X-Session-ID")
@@ -107,13 +108,16 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		if simple {
 			log.Printf("🧠 Simple turn detected — routing to local")
 		}
+		if forceLocal {
+			log.Printf("🔒 Developer requested local-only (x_force_local) — skipping cloud")
+		}
 
 		// Try each provider
 		for i := 0; i < len(chain); i++ {
 			provider := chain[i]
 
 			// Skip cloud providers if simple turn
-			if simple && provider.Name != "ollama" {
+			if (simple || forceLocal) && provider.Name != "ollama" {
 				continue
 			}
 
@@ -130,8 +134,11 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 
 			if provider.Name == "ollama" {
 				saved := store.AddTokensSaved(sessionID, estimateTokens(latestMessage))
-				if simple && fallbackCount == 0 {
-					log.Printf("🪖 Local: ollama (simple turn) | session saved: %d tokens", saved)
+				if forceLocal && fallbackCount == 0 {
+					log.Printf("🔒 Local: ollama (force_local) | privacy mode | session saved: %d tokens", saved)
+					w.Header().Set("X-Trooper-Decision", "ollama (force_local) | privacy mode | complex turn kept local")
+				} else if simple && fallbackCount == 0 {
+					log.Printf("🧠 Local: ollama (simple turn) | session saved: %d tokens", saved)
 					w.Header().Set("X-Trooper-Decision", "ollama (simple turn) | cloud skipped")
 				} else {
 					log.Printf("🪖 Fallback: %s → ollama (%s) | context preserved | session saved: %d tokens", chain[0].Name, trigger, saved)
