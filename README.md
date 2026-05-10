@@ -274,6 +274,19 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 
 ---
 
+## Per-request local routing
+
+Add `x_force_local: true` to any request body to route that specific 
+request to Ollama, regardless of complexity or provider availability.
+
+Use for:
+- Privacy — keep sensitive requests off the cloud
+- Cost control — force local for expensive operations  
+- Offline mode — bypass cloud entirely mid-session
+
+The session context is preserved. Cloud routing resumes on the next 
+request without the flag.
+
 ## Running tests
 
 ```bash
@@ -302,6 +315,7 @@ Covers: turn classifier, code detection, context compaction, token estimation. A
 | `TROOPER_BIND` | `127.0.0.1` | Bind address |
 | `AUTO_RECOVERY` | `false` | Enable automatic recovery to primary provider |
 | `OLLAMA_KEEP_ALIVE` | `5m` | Set `24h` in systemd to eliminate cold-start latency |
+| `FORCE_LOCAL` | `false` | Set `true` at startup to skip all cloud providers |
 
 ---
 
