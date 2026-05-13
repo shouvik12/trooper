@@ -1,3 +1,5 @@
+**NEW:** [4-agent privacy routing demo →](https://dev.to/shouvik12/i-tested-privacy-aware-routing-with-4-ai-agents-what-actually-stayed-local-39oa)
+
 # 🪖 Trooper
 
 > **Your LLM didn't crash — it fell back and kept going.**
