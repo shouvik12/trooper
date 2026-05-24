@@ -60,7 +60,7 @@ var safePatterns = []string{
 	// Trivial
 	"spell ", "abbreviation for",
 	// Conversation meta
-        "what have we covered",
+	"what have we covered",
 	"what did we discuss", "repeat that", "say that again",
 	"remind me", "give me an example",
 }
@@ -79,6 +79,80 @@ var riskPatterns = []string{
 	// Context-heavy
 	"based on what we said", "given our discussion",
 	"in my case", "for my use case",
-        // Summary (context-dependent — default to Claude)
-        "summarise", "summarize",
+	// Summary (context-dependent — default to Claude)
+	"summarise", "summarize",
+}
+
+var completedStepWords = []string{
+	"completed", "finished", "done", "successfully",
+	"passed", "merged", "deployed", "fixed",
+	"resolved", "closed", "reviewed", "approved",
+}
+
+func extractCompletedSteps(messages []map[string]string) []string {
+	completed := []string{}
+	seenPR := map[string]bool{}
+
+	for _, m := range messages {
+		if m["role"] != "assistant" {
+			continue
+		}
+		content := strings.ToLower(m["content"])
+		words := strings.Fields(content)
+
+		for i, raw := range words {
+			word := strings.Trim(raw, ".,!?:;\"'()")
+			for _, stepWord := range completedStepWords {
+				if strings.HasPrefix(word, stepWord) {
+					phrase := extractCompletedPhrase(words, i)
+					if len(phrase) < 4 {
+						break
+					}
+					prKey := extractPRKey(phrase)
+					if prKey != "" && seenPR[prKey] {
+						break
+					}
+					if prKey != "" {
+						seenPR[prKey] = true
+					}
+					completed = append(completed, phrase)
+					goto nextMessage
+				}
+			}
+		}
+	nextMessage:
+	}
+	return completed
+}
+
+func extractCompletedPhrase(words []string, i int) string {
+	end := i + 6
+	if end > len(words) {
+		end = len(words)
+	}
+	parts := []string{}
+	for j := i; j < end; j++ {
+		w := strings.Trim(words[j], ".,!?:;\"'()")
+		if w == "" {
+			continue
+		}
+		parts = append(parts, w)
+		if strings.HasSuffix(words[j], ".") || strings.HasSuffix(words[j], ",") {
+			break
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func extractPRKey(phrase string) string {
+	words := strings.Fields(phrase)
+	for i, w := range words {
+		if w == "#" && i+1 < len(words) {
+			return "#" + words[i+1]
+		}
+		if strings.HasPrefix(w, "#") && len(w) > 1 {
+			return w
+		}
+	}
+	return ""
 }

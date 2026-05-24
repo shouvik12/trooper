@@ -51,6 +51,7 @@ func main() {
 	}
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
 	store := NewSessionStore()
+	http.HandleFunc("/recovery/", recoveryHandler(store))
 	http.HandleFunc("/", makeHandler(chain, quotaCodes, active, store, states))
 	if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
@@ -1058,4 +1059,34 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// ── Recovery Endpoint ─────────────────────────────────────────────────────────
+
+func recoveryHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionID := strings.TrimPrefix(r.URL.Path, "/recovery/")
+		if sessionID == "" {
+			http.Error(w, `{"error":"session_id required"}`, http.StatusBadRequest)
+			return
+		}
+
+		messages := store.GetAll(sessionID)
+		if messages == nil {
+			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			return
+		}
+
+		completedSteps := extractCompletedSteps(messages)
+
+		resumeFrom := len(completedSteps) + 1
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"session_id":      sessionID,
+			"completed_steps": completedSteps,
+			"resume_from":     resumeFrom,
+			"recovery_hint":   fmt.Sprintf("Resume from step %d", resumeFrom),
+		})
+	}
 }

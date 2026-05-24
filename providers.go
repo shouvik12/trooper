@@ -45,12 +45,12 @@ func (a *ActiveProvider) Set(i int) {
 // ── Rolling SITREP Structures ─────────────────────────────────────────────────
 
 type SessionState struct {
-	Anchor   []map[string]string // Turns 1-2 (Immortal context)
-	SITREP   string              // Rolling distilled summary
-	Tail     []map[string]string // Recent turns
-        TokensSaved int  // cumulative tokens saved by routing to Ollama
-	LastSeen time.Time
-	mu       sync.Mutex
+	Anchor      []map[string]string // Turns 1-2 (Immortal context)
+	SITREP      string              // Rolling distilled summary
+	Tail        []map[string]string // Recent turns
+	TokensSaved int                 // cumulative tokens saved by routing to Ollama
+	LastSeen    time.Time
+	mu          sync.Mutex
 }
 
 type SessionStore struct {
@@ -324,4 +324,19 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 			}
 		}
 	}()
+}
+
+func (s *SessionStore) GetAll(sessionID string) []map[string]string {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	all := []map[string]string{}
+	all = append(all, state.Anchor...)
+	all = append(all, state.Tail...)
+	return all
 }

@@ -393,3 +393,71 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// ── Recovery Tests ────────────────────────────────────────────────────────────
+
+func TestExtractPRKey_Found(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"completed pr #1 review", "#1"},
+		{"completed pr #2", "#2"},
+		{"finished pr #8 checks", "#8"},
+	}
+	for _, c := range cases {
+		result := extractPRKey(c.input)
+		if result != c.expected {
+			t.Errorf("extractPRKey(%q) = %v, want %v", c.input, result, c.expected)
+		}
+	}
+}
+
+func TestExtractPRKey_NotFound(t *testing.T) {
+	cases := []string{
+		"completed review",
+		"finished successfully",
+		"done with task",
+	}
+	for _, c := range cases {
+		result := extractPRKey(c)
+		if result != "" {
+			t.Errorf("extractPRKey(%q) = %v, want empty", c, result)
+		}
+	}
+}
+
+func TestExtractCompletedSteps_AssistantOnly(t *testing.T) {
+	messages := []map[string]string{
+		{"role": "user", "content": "Begin your reply with: Completed PR #1."},
+		{"role": "assistant", "content": "Completed PR #1. No issues found."},
+		{"role": "user", "content": "Begin your reply with: Completed PR #2."},
+		{"role": "assistant", "content": "Completed PR #2. All checks passed."},
+	}
+	result := extractCompletedSteps(messages)
+	if len(result) != 2 {
+		t.Errorf("extractCompletedSteps() = %d steps, want 2", len(result))
+	}
+}
+
+func TestExtractCompletedSteps_NoDuplicates(t *testing.T) {
+	messages := []map[string]string{
+		{"role": "assistant", "content": "Completed PR #1. No issues found."},
+		{"role": "assistant", "content": "Completed PR #1. Rechecked and confirmed."},
+	}
+	result := extractCompletedSteps(messages)
+	if len(result) != 1 {
+		t.Errorf("extractCompletedSteps() = %d steps, want 1 (no duplicates)", len(result))
+	}
+}
+
+func TestExtractCompletedSteps_Empty(t *testing.T) {
+	messages := []map[string]string{
+		{"role": "assistant", "content": "Still working on this."},
+		{"role": "user", "content": "Please continue."},
+	}
+	result := extractCompletedSteps(messages)
+	if len(result) != 0 {
+		t.Errorf("extractCompletedSteps() = %d steps, want 0", len(result))
+	}
+}
