@@ -206,7 +206,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 				w.Header().Set("X-Trooper-Provider", provider.Name)
 				w.Header().Set("X-Trooper-Fallback-Count", fmt.Sprintf("%d", fallbackCount))
 				w.Header().Set("X-Trooper-Trigger", trigger)
-				copyResponse(w, resp)
+				copyAndStoreResponse(w, resp, store, sessionID)
 				return
 
 			case resp.StatusCode == http.StatusUnauthorized:
@@ -261,7 +261,7 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			case resp.StatusCode == 400:
 				bodyBytes, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
-				if strings.Contains(string(bodyBytes), "credit balance") {
+				if strings.Contains(string(bodyBytes), "credit balance") || strings.Contains(string(bodyBytes), "invalid") || strings.Contains(string(bodyBytes), "api_key") || strings.Contains(string(bodyBytes), "authentication") {
 					log.Printf("⚠️  %s 400 — credit balance too low, trying next", provider.Name)
 					fallbackCount++
 					trigger = "credit_balance"
@@ -1089,4 +1089,52 @@ func recoveryHandler(store *SessionStore) http.HandlerFunc {
 			"recovery_hint":   fmt.Sprintf("Resume from step %d", resumeFrom),
 		})
 	}
+}
+
+// ── Copy and Store Response ───────────────────────────────────────────────────
+
+func copyAndStoreResponse(w http.ResponseWriter, resp *http.Response, store *SessionStore, sessionID string) {
+	defer resp.Body.Close()
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	// Extract and store assistant message
+	var parsed map[string]interface{}
+	if json.Unmarshal(bodyBytes, &parsed) == nil {
+		text := ""
+		// Claude native format
+		if content, ok := parsed["content"].([]interface{}); ok && len(content) > 0 {
+			if block, ok := content[0].(map[string]interface{}); ok {
+				if t, ok := block["text"].(string); ok {
+					text = t
+				}
+			}
+		}
+		// OpenAI format
+		if text == "" {
+			if choices, ok := parsed["choices"].([]interface{}); ok && len(choices) > 0 {
+				if choice, ok := choices[0].(map[string]interface{}); ok {
+					if msg, ok := choice["message"].(map[string]interface{}); ok {
+						if t, ok := msg["content"].(string); ok {
+							text = t
+						}
+					}
+				}
+			}
+		}
+		if text != "" {
+			store.Append(sessionID, []map[string]string{
+				{"role": "assistant", "content": text},
+			})
+		}
+	}
+
+	w.Write(bodyBytes)
 }
