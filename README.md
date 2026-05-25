@@ -1,4 +1,4 @@
-**NEW:** [4-agent privacy routing demo →](https://dev.to/shouvik12/i-tested-privacy-aware-routing-with-4-ai-agents-what-actually-stayed-local-39oa)
+**NEW:** [Subagent recovery demo →](https://youtu.be/NN2uwQZDCck) | [Subagent recovery article →](https://dev.to/shouvik12/i-added-a-recovery-endpoint-to-my-llm-proxy-so-agents-never-lose-progress-mid-task-524b) | [4-agent privacy routing demo →](https://dev.to/shouvik12/i-tested-privacy-aware-routing-with-4-ai-agents-what-actually-stayed-local-39oa)
 
 # 🪖 Trooper
 
@@ -12,6 +12,7 @@ As LLM APIs get rate-limited and expensive, local fallback isn't optional anymor
 → Claude fails       → continues on Ollama
 → Simple prompts     → never hit the cloud
 → Every response     → shows tokens saved
+→ Agent mid-task     → recovery endpoint tells you exactly where to resume
 ```
 
 **Trooper is a circuit breaker + router + context engine for LLMs.**
@@ -213,7 +214,7 @@ client = OpenAI(
 curl http://localhost:3000/ \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: my-session" \
-  -d '{"model": "claude-3-5-haiku-20241022", "messages": [{"role": "user", "content": "Hello!"}]}'
+  -d '{"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
 Pass `X-Session-ID` to track named sessions. Without it, Trooper assigns a unique auto session per request.
@@ -311,13 +312,13 @@ request without the flag.
 # Turn 1 & 2 — Claude handles it (cloud)
 curl http://localhost:3000/v1/chat/completions \
   -H "X-Session-ID: dev-session" \
-  -d '{"model": "claude-sonnet-4-5", "max_tokens": 1024,
+  -d '{"model": "claude-haiku-4-5", "max_tokens": 1024,
        "messages": [{"role": "user", "content": "Help me design our auth layer"}]}'
 
 # Turn 3 — sensitive detail, developer keeps it local
 curl http://localhost:3000/v1/chat/completions \
   -H "X-Session-ID: dev-session" \
-  -d '{"model": "claude-sonnet-4-5", "max_tokens": 1024,
+  -d '{"model": "claude-haiku-4-5", "max_tokens": 1024,
        "x_force_local": true,
        "messages": [{"role": "user", "content": "Our payment vault uses..."}]}'
 ```
@@ -328,13 +329,48 @@ Trooper log on Turn 3:
 🔒 Local: ollama (force_local) | privacy mode | session saved: 28 tokens
 ```
 
+---
+
+## Subagent recovery
+
+Trooper tracks every step your agent completes in real time. When something fails mid-task, call `/recovery/{session_id}` to find out exactly what completed and where to resume.
+
+```bash
+GET http://localhost:3000/recovery/{session_id}
+```
+
+Response:
+
+```json
+{
+  "session_id": "my-agent-session-1",
+  "completed_steps": [
+    "completed pr #1",
+    "completed pr #2",
+    "completed pr #3"
+  ],
+  "resume_from": 4,
+  "recovery_hint": "Resume from step 4"
+}
+```
+
+Your parent agent uses this to restart the subagent from the right step — no repeated work, no lost progress.
+
+**How it works:** Trooper scans stored assistant messages for completion signals — words like "completed", "finished", "done", "merged", "deployed". It extracts one completed step per message and deduplicates by task identifier.
+
+**For best results:** have your agent narrate its progress naturally — "Completed PR #1. Code quality looks good." Most LLMs do this automatically when working through multi-step tasks.
+
+**Demo:** [Agent hits quota on PR #4 of 8 — Trooper recovers it in seconds →](https://youtu.be/NN2uwQZDCck)
+
+---
+
 ## Running tests
 
 ```bash
 go test ./... -v
 ```
 
-Covers: turn classifier, code detection, context compaction, token estimation. All tests must pass before any contribution is merged.
+Covers: turn classifier, code detection, context compaction, token estimation, subagent step tracking. All tests must pass before any contribution is merged.
 
 ---
 
@@ -343,7 +379,7 @@ Covers: turn classifier, code detection, context compaction, token estimation. A
 | Variable | Default | Description |
 |---|---|---|
 | `CLAUDE_API_KEY` | — | Anthropic API key |
-| `CLAUDE_MODEL` | — | Default Claude model |
+| `CLAUDE_MODEL` | `claude-haiku-4-5` | Default Claude model |
 | `GEMINI_API_KEY` | — | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Default Gemini model |
 | `OPENAI_API_KEY` | — | OpenAI API key |
@@ -371,6 +407,11 @@ Covers: turn classifier, code detection, context compaction, token estimation. A
 ---
 
 ## Roadmap
+
+**V3.2 — Released**
+- ✅ Subagent recovery — `/recovery/{session_id}` endpoint tracks completed steps in real time
+- ✅ Response normalization — Claude direct responses wrapped in OpenAI-compatible format
+- ✅ Broader 400 fallback — invalid keys and auth errors now trigger local fallback
 
 **V3.1 — Released**
 - ✅ Smart routing — simple turns route to Ollama directly, cloud never contacted
