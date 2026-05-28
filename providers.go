@@ -13,7 +13,7 @@ import (
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TailThreshold = 10 // Move oldest 5 turns to SITREP when Tail exceeds this
+const TailThreshold = 100 // Move oldest 5 turns to SITREP when Tail exceeds this
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -339,4 +339,16 @@ func (s *SessionStore) GetAll(sessionID string) []map[string]string {
 	all = append(all, state.Anchor...)
 	all = append(all, state.Tail...)
 	return all
+}
+
+func (s *SessionStore) GetTokensSaved(sessionID string) int {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.TokensSaved
 }

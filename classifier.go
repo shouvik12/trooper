@@ -126,7 +126,7 @@ func extractCompletedSteps(messages []map[string]string) []string {
 }
 
 func extractCompletedPhrase(words []string, i int) string {
-	end := i + 6
+	end := i + 10
 	if end > len(words) {
 		end = len(words)
 	}

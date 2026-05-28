@@ -52,6 +52,9 @@ func main() {
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
 	store := NewSessionStore()
 	http.HandleFunc("/recovery/", recoveryHandler(store))
+	http.HandleFunc("/dashboard", dashboardIndexHandler(store))
+	http.HandleFunc("/sessions", sessionsHandler(store))
+	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	http.HandleFunc("/", makeHandler(chain, quotaCodes, active, store, states))
 	if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
@@ -76,6 +79,10 @@ func loadQuotaCodes() map[int]bool {
 
 func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvider, store *SessionStore, states map[string]*ProviderState) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead || (r.Method == http.MethodGet && r.URL.Path == "/") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, `{"error":"failed to read request"}`, http.StatusBadRequest)
@@ -508,7 +515,7 @@ func classifyWord(word string) SignalType {
 // ── Phrase Extraction ─────────────────────────────────────────────────────────
 
 func extractForwardPhrase(words []string, i int) string {
-	end := i + 5
+	end := i + 8
 	if end > len(words) {
 		end = len(words)
 	}
@@ -564,7 +571,7 @@ func extractIntent(messages []map[string]string, latestUser string) (string, str
 		for _, verb := range intentVerbs {
 			if strings.Contains(content, verb) {
 				idx := strings.Index(content, verb)
-				end := idx + 60
+				end := idx + 100
 				if end > len(content) {
 					end = len(content)
 				}
@@ -578,7 +585,7 @@ func extractIntent(messages []map[string]string, latestUser string) (string, str
 		for _, verb := range intentVerbs {
 			if strings.Contains(content, verb) {
 				idx := strings.Index(content, verb)
-				end := idx + 60
+				end := idx + 100
 				if end > len(content) {
 					end = len(content)
 				}
@@ -712,7 +719,7 @@ func extractSignals(messages []map[string]string) (openLoops, recentActions, res
 			}
 
 			phrase := extractForwardPhrase(words, i)
-			if len(phrase) < 4 {
+			if len(strings.Fields(phrase)) < 2 {
 				continue
 			}
 
@@ -1065,6 +1072,10 @@ func getEnv(key, fallback string) string {
 
 func recoveryHandler(store *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead || (r.Method == http.MethodGet && r.URL.Path == "/") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		sessionID := strings.TrimPrefix(r.URL.Path, "/recovery/")
 		if sessionID == "" {
 			http.Error(w, `{"error":"session_id required"}`, http.StatusBadRequest)
@@ -1137,4 +1148,213 @@ func copyAndStoreResponse(w http.ResponseWriter, resp *http.Response, store *Ses
 	}
 
 	w.Write(bodyBytes)
+}
+
+// ── Dashboard Handler ─────────────────────────────────────────────────────────
+
+func dashboardHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.URL.Query().Get("session")
+		if sessionID == "" {
+			http.Error(w, "session parameter required", http.StatusBadRequest)
+			return
+		}
+
+		messages := store.GetAll(sessionID)
+		completed := extractCompletedSteps(messages)
+		sitrep := buildSITREP(messages, extractLatestUserMessage2(messages))
+		tokensSaved := store.GetTokensSaved(sessionID)
+
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trooper — %s</title>
+<style>
+body{font-family:monospace;max-width:1100px;margin:40px auto;padding:20px;background:#0d0d0d;color:#e0e0e0}
+h1{color:#4ade80}h2{color:#86efac;border-bottom:1px solid #333;padding-bottom:8px}
+.card{border:1px solid #333;border-radius:8px;padding:20px;margin:20px 0;background:#1a1a1a}
+.metric{font-size:28px;font-weight:bold;color:#4ade80}
+.open-loop{color:#f87171;padding:4px 0}
+.resolved{color:#4ade80;padding:4px 0}
+.msg{border-left:3px solid #333;padding:10px;margin:8px 0;background:#111;border-radius:4px}
+.msg.user{border-left-color:#4ade80}
+.msg.assistant{border-left-color:#60a5fa}
+.msg.system{border-left-color:#f59e0b}
+.role{font-size:11px;color:#888;margin-bottom:4px;text-transform:uppercase}
+.content{white-space:pre-wrap;word-break:break-word}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px}
+.green{background:#14532d;color:#4ade80}
+.red{background:#450a0a;color:#f87171}
+</style>
+</head>
+<body>
+<h1>🪖 Trooper Dashboard</h1>
+<p style="color:#888">Session: <strong style="color:#fff">%s</strong></p>
+
+<div class="card">
+<h2>📊 Metrics</h2>
+<p>Tokens saved: <span class="metric">%d</span></p>
+<p>Intent: <strong style="color:#fbbf24">%s</strong> <span style="color:#888">(confidence: %.0f%%)</span></p>
+<p>Entities: %s</p>
+</div>
+
+<div class="card">
+<h2>🔓 Open Loops</h2>
+%s
+</div>
+
+<div class="card">
+<h2>✅ Completed Steps</h2>
+%s
+</div>
+
+<div class="card">
+<h2>📜 Session Transcript</h2>
+%s
+</div>
+
+<p style="color:#555;font-size:12px">Auto-refreshes every 5 seconds</p>
+<script>setTimeout(()=>location.reload(),5000)</script>
+</body>
+</html>`,
+			sessionID, sessionID, tokensSaved,
+			sitrep.Intent, sitrep.Confidence*100,
+			renderBadges(sitrep.Entities),
+			renderOpenLoops(sitrep.OpenLoops),
+			renderCompleted(completed),
+			renderMessages(messages),
+		)
+	}
+}
+
+func renderBadges(items []string) string {
+	if len(items) == 0 {
+		return `<span style="color:#555">none detected</span>`
+	}
+	out := ""
+	for _, item := range items {
+		item = strings.Trim(item, "*#`_~")
+		if strings.ContainsAny(item, "(){}[]<>|=+/") || len(item) == 0 {
+			continue
+		}
+		out += fmt.Sprintf(`<span class="badge green">%s</span>`, item)
+	}
+	return out
+}
+
+func renderOpenLoops(loops []string) string {
+	if len(loops) == 0 {
+		return `<p style="color:#4ade80">✅ No open loops detected</p>`
+	}
+	out := ""
+	for _, l := range loops {
+		l = strings.Trim(l, "*#`_~0123456789. ")
+		out += fmt.Sprintf(`<p class="open-loop">⚠️ %s</p>`, l)
+	}
+	return out
+}
+
+func renderCompleted(steps []string) string {
+	if len(steps) == 0 {
+		return `<p style="color:#555">No completed steps tracked yet</p>`
+	}
+	out := ""
+	for _, s := range steps {
+		out += fmt.Sprintf(`<p class="resolved">✅ %s</p>`, s)
+	}
+	return out
+}
+
+func renderMessages(messages []map[string]string) string {
+	if len(messages) == 0 {
+		return `<p style="color:#555">No messages yet</p>`
+	}
+	out := ""
+	for _, m := range messages {
+		role := m["role"]
+		content := m["content"]
+		if len(content) > 500 {
+			content = content[:500] + "..."
+		}
+		out += fmt.Sprintf(`<div class="msg %s"><div class="role">%s</div><div class="content">%s</div></div>`, role, role, content)
+	}
+	return out
+}
+
+func extractLatestUserMessage2(messages []map[string]string) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i]["role"] == "user" {
+			return messages[i]["content"]
+		}
+	}
+	return ""
+}
+
+// ── Sessions Handler ──────────────────────────────────────────────────────────
+
+func sessionsHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		store.mu.RLock()
+		sessions := make([]string, 0, len(store.sessions))
+		for id := range store.sessions {
+			sessions = append(sessions, id)
+		}
+		store.mu.RUnlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"sessions": sessions,
+			"count":    len(sessions),
+		})
+	}
+}
+
+// ── Dashboard Index Handler ───────────────────────────────────────────────────
+
+func dashboardIndexHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("session") != "" {
+			dashboardHandler(store)(w, r)
+			return
+		}
+
+		store.mu.RLock()
+		sessions := make([]string, 0, len(store.sessions))
+		for id := range store.sessions {
+			sessions = append(sessions, id)
+		}
+		store.mu.RUnlock()
+
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trooper — Sessions</title>
+<style>
+body{font-family:monospace;max-width:900px;margin:40px auto;padding:20px;background:#0d0d0d;color:#e0e0e0}
+h1{color:#4ade80}
+.session{border:1px solid #333;border-radius:8px;padding:16px;margin:12px 0;background:#1a1a1a;cursor:pointer}
+.session:hover{border-color:#4ade80}
+.session a{color:#4ade80;text-decoration:none;font-size:16px}
+.empty{color:#555;margin-top:40px}
+</style>
+</head>
+<body>
+<h1>🪖 Trooper</h1>
+<p style="color:#888">Active sessions</p>
+`)
+		if len(sessions) == 0 {
+			fmt.Fprintf(w, `<p class="empty">No active sessions. Point your agent at Trooper to get started.</p>`)
+		} else {
+			for _, id := range sessions {
+				fmt.Fprintf(w, `<div class="session"><a href="/dashboard?session=%s">%s →</a></div>`, id, id)
+			}
+		}
+		fmt.Fprintf(w, `<p style="color:#555;font-size:12px;margin-top:40px">Auto-refreshes every 5 seconds</p>
+<script>setTimeout(()=>location.reload(),5000)</script>
+</body></html>`)
+	}
 }
