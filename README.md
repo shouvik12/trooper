@@ -1,21 +1,21 @@
-**NEW:** [Subagent recovery demo →](https://youtu.be/NN2uwQZDCck) | [Subagent recovery article →](https://dev.to/shouvik12/i-added-a-recovery-endpoint-to-my-llm-proxy-so-agents-never-lose-progress-mid-task-524b) | [4-agent privacy routing demo →](https://dev.to/shouvik12/i-tested-privacy-aware-routing-with-4-ai-agents-what-actually-stayed-local-39oa)
+**NEW:** [Live dashboard demo →](http://127.0.0.1:3000/dashboard) | [Subagent recovery demo →](https://youtu.be/NN2uwQZDCck) | [Subagent recovery article →](https://dev.to/shouvik12/i-added-a-recovery-endpoint-to-my-llm-proxy-so-agents-never-lose-progress-mid-task-524b) | [4-agent privacy routing demo →](https://dev.to/shouvik12/i-tested-privacy-aware-routing-with-4-ai-agents-what-actually-stayed-local-39oa)
 
 # 🪖 Trooper
 
-> **Your LLM didn't crash — it fell back and kept going.**
+> **Your agent communicates over HTTP to an LLM. Trooper can observe it.**
 
-Quota errors should be invisible.
+Trooper started as a fallback proxy. It's now an active observer.
 
-As LLM APIs get rate-limited and expensive, local fallback isn't optional anymore.
+Your agent runs. Trooper watches. You see everything — intent, open loops, completed steps, full transcript. Live. Zero instrumentation.
 
 ```
-→ Claude fails       → continues on Ollama
+→ Any agent          → point at Trooper, open dashboard, see everything
+→ Claude fails       → continues on Ollama, context preserved
 → Simple prompts     → never hit the cloud
-→ Every response     → shows tokens saved
-→ Agent mid-task     → recovery endpoint tells you exactly where to resume
+→ Agent mid-task     → /recovery tells you exactly where to resume
 ```
 
-**Trooper is a circuit breaker + router + context engine for LLMs.**
+**Trooper is a zero-instrumentation agent observability platform with local fallback.**
 
 <img width="2070" height="582" alt="image" src="https://github.com/user-attachments/assets/e44f1843-5a6b-4f52-bd3e-37fffadb0b85" />
 
@@ -23,7 +23,14 @@ As LLM APIs get rate-limited and expensive, local fallback isn't optional anymor
 
 ## What you see
 
-Every response tells you exactly what happened — no dashboards, no setup:
+**In the dashboard** — open `http://localhost:3000/dashboard` while your agent runs:
+
+- **Intent** — what your agent is trying to do, extracted automatically
+- **Open Loops** — what it's stuck on, highlighted in real time
+- **Completed Steps** — what it finished, tracked as it happens
+- **Session Transcript** — every message, colour coded by role
+
+**In every response header** — no dashboards required:
 
 ```bash
 # Simple question → Ollama handled it, cloud never contacted
@@ -42,49 +49,76 @@ X-Trooper-Session-Saved: 42 tokens
 X-Trooper-Summary: claude → ollama (credit_balance) | context ✓
 ```
 
-`X-Trooper-Session-Saved` accumulates across the session — every turn routed locally instead of to a paid API adds to the count.
-
 ---
 
 ## What Trooper is
 
-Trooper is a drop-in proxy for LLM apps. When cloud models fail — quota, rate limits, outages — it automatically falls back to your local Ollama instance while preserving full conversation context.
+Trooper is a drop-in proxy that sits between your agent and any LLM provider. It observes every request, extracts intent and signals, and builds a live picture of what your agent is doing — all without touching your code.
 
-No retries. No crashes. No lost sessions. ⏱ Runs in under 60 seconds.
+When cloud models fail — quota, rate limits, outages — it automatically falls back to your local Ollama instance while preserving full conversation context.
+
+**Trooper is no longer passive.** It started as a fallback proxy. Now it watches every session actively and makes that data visible.
+
+No retries. No crashes. No lost sessions. No SDK. No instrumentation. ⏱ Runs in under 60 seconds.
 
 ---
 
 ## Who uses Trooper
 
-**App developers** — your users never see quota errors. Trooper fails
-over to local Ollama transparently while your app keeps running.
+**Agent builders** — see exactly what your agent is doing, what it's stuck on, and what it completed. Zero instrumentation — just point your agent at Trooper.
 
-**Agent builders** — agent loops survive quota limits mid-task. 
-Context is preserved so the agent continues exactly where it left off.
+**App developers** — your users never see quota errors. Trooper falls over to local Ollama transparently while your app keeps running.
 
-**Claude Code / Cursor users** — coding sessions survive quota hits.
-No lost context, no starting over.
+**Claude Code / Cursor users** — coding sessions survive quota hits. No lost context, no starting over.
 
-**Privacy-conscious developers** — use `x_force_local` to keep
-sensitive requests off the cloud without interrupting the session.
+**Privacy-conscious developers** — use `x_force_local` to keep sensitive requests off the cloud without interrupting the session.
 
 ---
 
-## Why not LiteLLM or Bifrost
+## Why not LiteLLM, Bifrost, or Helicone
 
-LiteLLM and Bifrost route between cloud providers.
+| | LiteLLM / Bifrost | Helicone | Trooper |
+|---|---|---|---|
+| Observability | ❌ | Request-level only | ✅ Intent, open loops, completed steps |
+| Instrumentation needed | SDK required | None | None |
+| Fallback target | Another cloud | Another cloud | Your local machine |
+| Local / private | ❌ | ❌ Cloud only | ✅ Data never leaves machine |
+| Setup | `pip install`, YAML | API key, cloud account | One Go binary, env vars |
+| Status | Active | Maintenance mode | Active |
 
-Trooper is built for a different failure mode: when the cloud stops working.
+Helicone is the closest — proxy-based, zero instrumentation. But it went into maintenance mode in March 2026 and sends your data to their cloud. Trooper is the open source, local-first alternative.
 
-| | LiteLLM / Bifrost | Trooper |
-|---|---|---|
-| Fallback target | Another cloud provider | Your local machine |
-| Setup | `pip install`, venv, YAML | One Go binary, env vars |
-| Dependencies | Heavy Python stack | Zero — pure stdlib |
-| Works offline | ❌ | ✅ |
-| Data on fallback | Goes to another cloud | Stays on your machine |
+---
 
-When LiteLLM falls back, your data goes to another cloud. When Trooper falls back, your data goes to your machine.
+## Live Dashboard
+
+Point any agent at Trooper. Open `http://localhost:3000/dashboard`. See everything.
+
+```bash
+# Start Trooper
+go run .
+
+# Point your agent at Trooper
+export ANTHROPIC_BASE_URL=http://localhost:3000
+export OPENAI_BASE_URL=http://localhost:3000
+
+# Open dashboard — no session ID needed
+open http://localhost:3000/dashboard
+```
+
+The dashboard shows all active sessions. Click any session to see:
+
+- Real-time intent extraction
+- Open loops highlighted in red as they appear
+- Completed steps in green as they resolve
+- Full session transcript
+
+Auto-refreshes every 5 seconds. No page reload needed.
+
+**List all active sessions:**
+```bash
+curl http://localhost:3000/sessions
+```
 
 ---
 
@@ -135,16 +169,6 @@ The SITREP is extracted automatically — no LLM call needed. From a real sessio
 }[/TROOPER_SITREP]
 ```
 
-Compaction triggers automatically when the session exceeds the token budget:
-
-```
-📦  Context compaction triggered — 1532 tokens exceeds 6144 budget
-    Anchor turns   : 2 (~180 tokens)
-    Middle turns   : 2 → SITREP (~148 tokens)
-    Recent turns   : 1 (~36 tokens)
-    Tokens used    : 364 / 6144
-```
-
 > **Honest note:** Compaction is lossy by design. The SITREP preserves intent and state — not verbatim history. For precision-critical workflows, keep sessions short or increase `CONTEXT_WINDOW`.
 
 ---
@@ -158,11 +182,6 @@ Compaction triggers automatically when the session exceeds the token budget:
 ```bash
 ollama pull qwen2.5:3b
 ```
-
-> 💡 **Eliminate cold-start latency** — set `OLLAMA_KEEP_ALIVE=24h` in your Ollama systemd service. Without this, the first fallback after idle takes 3–5s for 7B models, up to 20s for 72B. Add to your systemd service:
-> ```
-> Environment="OLLAMA_KEEP_ALIVE=24h"
-> ```
 
 ### Option 1 — Docker (no Go required)
 
@@ -180,10 +199,10 @@ docker compose up
 git clone https://github.com/shouvik12/trooper
 cd trooper
 export CLAUDE_API_KEY=sk-ant-...
-go run main.go providers.go classifier.go
+go run .
 ```
 
-Trooper starts on `http://127.0.0.1:3000`. Binds to localhost by default — your API keys are not exposed on the network.
+Trooper starts on `http://127.0.0.1:3000`. Open `http://127.0.0.1:3000/dashboard` in your browser.
 
 ---
 
@@ -211,10 +230,10 @@ client = OpenAI(
 
 **curl:**
 ```bash
-curl http://localhost:3000/ \
+curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: my-session" \
-  -d '{"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "Hello!"}]}'
+  -d '{"model": "claude-haiku-4-5", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
 Pass `X-Session-ID` to track named sessions. Without it, Trooper assigns a unique auto session per request.
@@ -240,7 +259,7 @@ CLAUDE_API_KEY=sk-ant-...  OPENAI_API_KEY=sk-...   # Chain: Claude → OpenAI �
 | `200 OK` | Pass through |
 | `429 Rate Limited` | Retry with 2s backoff, then try next |
 | `402 Payment Required` | Fall back immediately |
-| `400 Credit Balance` | Detect credit error, fall back immediately |
+| `400 Credit Balance / Invalid Key` | Fall back immediately |
 | `401 Unauthorized` | Surface error — bad keys are never masked |
 | `529 Overloaded` | Fall back immediately |
 | Network error | Fall back immediately — 30s timeout per provider |
@@ -286,7 +305,7 @@ If a provider fails 3 times within 60 seconds, Trooper skips it automatically �
 ## Auto recovery
 
 ```bash
-AUTO_RECOVERY=true go run main.go providers.go classifier.go
+AUTO_RECOVERY=true go run .
 ```
 
 Health checks use a free `GET /models` endpoint — no inference requests, no cost. Trooper silently routes back to the primary provider when it recovers.
@@ -295,27 +314,9 @@ Health checks use a free `GET /models` endpoint — no inference requests, no co
 
 ## Per-request local routing
 
-Add `x_force_local: true` to any request body to route that specific
-request to Ollama, regardless of complexity or provider availability.
-
-Use for:
-- Privacy — keep sensitive requests off the cloud
-- Cost control — force local for expensive operations
-- Offline mode — bypass cloud entirely mid-session
-
-The session context is preserved. Cloud routing resumes on the next
-request without the flag.
-
-**Example:**
+Add `x_force_local: true` to any request body to route that specific request to Ollama:
 
 ```bash
-# Turn 1 & 2 — Claude handles it (cloud)
-curl http://localhost:3000/v1/chat/completions \
-  -H "X-Session-ID: dev-session" \
-  -d '{"model": "claude-haiku-4-5", "max_tokens": 1024,
-       "messages": [{"role": "user", "content": "Help me design our auth layer"}]}'
-
-# Turn 3 — sensitive detail, developer keeps it local
 curl http://localhost:3000/v1/chat/completions \
   -H "X-Session-ID: dev-session" \
   -d '{"model": "claude-haiku-4-5", "max_tokens": 1024,
@@ -323,17 +324,11 @@ curl http://localhost:3000/v1/chat/completions \
        "messages": [{"role": "user", "content": "Our payment vault uses..."}]}'
 ```
 
-Trooper log on Turn 3:
-```
-🔒 Developer requested local-only (x_force_local) — skipping cloud
-🔒 Local: ollama (force_local) | privacy mode | session saved: 28 tokens
-```
-
 ---
 
 ## Subagent recovery
 
-Trooper tracks every step your agent completes in real time. When something fails mid-task, call `/recovery/{session_id}` to find out exactly what completed and where to resume.
+Trooper tracks every step your agent completes in real time. When something fails mid-task:
 
 ```bash
 GET http://localhost:3000/recovery/{session_id}
@@ -354,12 +349,6 @@ Response:
 }
 ```
 
-Your parent agent uses this to restart the subagent from the right step — no repeated work, no lost progress.
-
-**How it works:** Trooper scans stored assistant messages for completion signals — words like "completed", "finished", "done", "merged", "deployed". It extracts one completed step per message and deduplicates by task identifier.
-
-**For best results:** have your agent narrate its progress naturally — "Completed PR #1. Code quality looks good." Most LLMs do this automatically when working through multi-step tasks.
-
 **Demo:** [Agent hits quota on PR #4 of 8 — Trooper recovers it in seconds →](https://youtu.be/NN2uwQZDCck)
 
 ---
@@ -368,9 +357,10 @@ Your parent agent uses this to restart the subagent from the right step — no r
 
 ```bash
 go test ./... -v
+./sanity.sh
 ```
 
-Covers: turn classifier, code detection, context compaction, token estimation, subagent step tracking. All tests must pass before any contribution is merged.
+Covers: turn classifier, code detection, context compaction, token estimation, subagent step tracking, agent observability.
 
 ---
 
@@ -391,7 +381,6 @@ Covers: turn classifier, code detection, context compaction, token estimation, s
 | `TROOPER_PORT` | `3000` | Port Trooper listens on |
 | `TROOPER_BIND` | `127.0.0.1` | Bind address |
 | `AUTO_RECOVERY` | `false` | Enable automatic recovery to primary provider |
-| `OLLAMA_KEEP_ALIVE` | `5m` | Set `24h` in systemd to eliminate cold-start latency |
 
 ---
 
@@ -407,6 +396,11 @@ Covers: turn classifier, code detection, context compaction, token estimation, s
 ---
 
 ## Roadmap
+
+**V3.3 — Released**
+- ✅ Live dashboard — `localhost:3000/dashboard` shows intent, open loops, completed steps, transcript
+- ✅ Sessions endpoint — `localhost:3000/sessions` lists all active sessions
+- ✅ Zero instrumentation agent observability — just a URL change
 
 **V3.2 — Released**
 - ✅ Subagent recovery — `/recovery/{session_id}` endpoint tracks completed steps in real time
