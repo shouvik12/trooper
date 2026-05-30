@@ -17,7 +17,8 @@ Your agent runs. Trooper watches. You see everything — intent, open loops, com
 
 **Trooper is a zero-instrumentation agent observability platform with local fallback.**
 
-<img width="2070" height="582" alt="image" src="https://github.com/user-attachments/assets/e44f1843-5a6b-4f52-bd3e-37fffadb0b85" />
+<img width="971" height="832" alt="Trooper Dashboard" src="https://github.com/user-attachments/assets/2f22f3fb-55a5-4f68-ad9a-cb1d691930a0" />
+
 
 ---
 
