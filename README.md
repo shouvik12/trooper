@@ -177,12 +177,6 @@ The SITREP is extracted automatically — no LLM call needed. From a real sessio
 
 ⏱ Runs in under 60 seconds.
 
-### Prerequisites
-
-```bash
-ollama pull qwen2.5:3b
-```
-
 ### Option 1 — Docker (no Go required)
 
 ```bash
@@ -191,9 +185,18 @@ cd trooper
 cp .env.example .env
 # edit .env — set CLAUDE_API_KEY
 docker compose up
+
+# First run: pull the model into the Ollama container
+docker compose exec ollama ollama pull qwen2.5:3b
 ```
 
 ### Option 2 — Run from source (Go 1.22+)
+
+### Prerequisites
+
+```bash
+ollama pull qwen2.5:3b
+```
 
 ```bash
 git clone https://github.com/shouvik12/trooper
