@@ -13,7 +13,7 @@ import (
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TailThreshold = 100 // Move oldest 5 turns to SITREP when Tail exceeds this
+const TailThreshold = 10 // Move oldest 5 turns to SITREP when Tail exceeds this
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,22 @@ func (a *ActiveProvider) Set(i int) {
 	a.index = i
 }
 
+// ── New types for dashboard ───────────────────────────────────────────────────
+
+type MessageEntry struct {
+	Role     string
+	Content  string
+	Provider string
+	At       time.Time
+}
+
+type FallbackEvent struct {
+	FromProvider string
+	ToProvider   string
+	Reason       string
+	At           time.Time
+}
+
 // ── Rolling SITREP Structures ─────────────────────────────────────────────────
 
 type SessionState struct {
@@ -51,6 +67,11 @@ type SessionState struct {
 	TokensSaved int                 // cumulative tokens saved by routing to Ollama
 	LastSeen    time.Time
 	mu          sync.Mutex
+
+	// Dashboard fields
+	entries   []MessageEntry
+	fallbacks []FallbackEvent
+	startTime time.Time
 }
 
 type SessionStore struct {
@@ -77,6 +98,7 @@ func (s *SessionStore) cleanup() {
 		s.mu.Unlock()
 	}
 }
+
 func (s *SessionStore) AddTokensSaved(sessionID string, tokens int) int {
 	s.mu.RLock()
 	state, ok := s.sessions[sessionID]
@@ -96,7 +118,8 @@ func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
 	state, ok := s.sessions[sessionID]
 	if !ok {
 		state = &SessionState{
-			LastSeen: time.Now(),
+			LastSeen:  time.Now(),
+			startTime: time.Now(),
 		}
 		s.sessions[sessionID] = state
 	}
@@ -105,8 +128,53 @@ func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	// Lazily fill anchor from first 2 turns across any number of requests
 	for _, msg := range messages {
+		if len(state.Anchor) < 2 {
+			state.Anchor = append(state.Anchor, msg)
+		} else {
+			state.Tail = append(state.Tail, msg)
+		}
+		// Also record in entries for dashboard transcript
+		state.entries = append(state.entries, MessageEntry{
+			Role:    msg["role"],
+			Content: msg["content"],
+			At:      time.Now(),
+		})
+	}
+
+	state.LastSeen = time.Now()
+
+	if len(state.Tail) > TailThreshold {
+		toCompress := make([]map[string]string, 5)
+		copy(toCompress, state.Tail[:5])
+		state.Tail = state.Tail[5:]
+		go s.updateSITREP(sessionID, toCompress)
+	}
+}
+
+// AppendWithMeta stores a message entry with provider and timestamp metadata
+func (s *SessionStore) AppendWithMeta(sessionID string, entries []MessageEntry) {
+	s.mu.Lock()
+	state, ok := s.sessions[sessionID]
+	if !ok {
+		state = &SessionState{
+			LastSeen:  time.Now(),
+			startTime: time.Now(),
+		}
+		s.sessions[sessionID] = state
+	}
+	s.mu.Unlock()
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	for _, e := range entries {
+		if e.At.IsZero() {
+			e.At = time.Now()
+		}
+		state.entries = append(state.entries, e)
+		// Keep plain sessions map in sync for SITREP / compaction
+		msg := map[string]string{"role": e.Role, "content": e.Content}
 		if len(state.Anchor) < 2 {
 			state.Anchor = append(state.Anchor, msg)
 		} else {
@@ -114,14 +182,76 @@ func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
 		}
 	}
 	state.LastSeen = time.Now()
+}
 
-	// If Tail grows too large, move the oldest 5 turns to SITREP in background
-	if len(state.Tail) > TailThreshold {
-		toCompress := make([]map[string]string, 5)
-		copy(toCompress, state.Tail[:5])
-		state.Tail = state.Tail[5:]
-		go s.updateSITREP(sessionID, toCompress)
+// GetEntries returns all transcript entries for a session
+func (s *SessionStore) GetEntries(sessionID string) []MessageEntry {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
 	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	result := make([]MessageEntry, len(state.entries))
+	copy(result, state.entries)
+	return result
+}
+
+// AddFallbackEvent records a provider switch and injects it into the transcript
+func (s *SessionStore) AddFallbackEvent(sessionID string, event FallbackEvent) {
+	s.mu.Lock()
+	state, ok := s.sessions[sessionID]
+	if !ok {
+		state = &SessionState{
+			LastSeen:  time.Now(),
+			startTime: time.Now(),
+		}
+		s.sessions[sessionID] = state
+	}
+	s.mu.Unlock()
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	state.fallbacks = append(state.fallbacks, event)
+
+	// Inject synthetic transcript entry so it appears inline
+	state.entries = append(state.entries, MessageEntry{
+		Role:     "fallback",
+		Content:  event.ToProvider,
+		Provider: event.FromProvider,
+		At:       event.At,
+	})
+}
+
+// GetFallbackEvents returns all fallback events for a session
+func (s *SessionStore) GetFallbackEvents(sessionID string) []FallbackEvent {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	result := make([]FallbackEvent, len(state.fallbacks))
+	copy(result, state.fallbacks)
+	return result
+}
+
+// GetStartTime returns when the session started
+func (s *SessionStore) GetStartTime(sessionID string) time.Time {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return time.Time{}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.startTime
 }
 
 // updateSITREP performs incremental distillation using Ollama
@@ -135,8 +265,11 @@ func (s *SessionStore) updateSITREP(sessionID string, newTurns []map[string]stri
 
 	turnsJSON, _ := json.Marshal(newTurns)
 	prompt := fmt.Sprintf(`Update SITREP. Protocol: "direct" (v2).
+
 Rules: No filler, use word-level abbreviations, technical acronyms only.
+
 Current SITREP: %s
+
 New History to integrate: %s`, state.SITREP, string(turnsJSON))
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
@@ -164,6 +297,7 @@ New History to integrate: %s`, state.SITREP, string(turnsJSON))
 	state.mu.Lock()
 	state.SITREP = res.Response
 	state.mu.Unlock()
+
 	log.Printf("📡 SITREP updated for session: %s", sessionID)
 }
 
@@ -187,6 +321,37 @@ func (s *SessionStore) GetTripleAnchor(sessionID string) []map[string]string {
 		})
 	}
 	return append(payload, state.Tail...)
+}
+
+// GetAll returns all messages flat for a session
+func (s *SessionStore) GetAll(sessionID string) []map[string]string {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	var all []map[string]string
+	all = append(all, state.Anchor...)
+	all = append(all, state.Tail...)
+	return all
+}
+
+// GetTokensSaved returns cumulative tokens saved for a session
+func (s *SessionStore) GetTokensSaved(sessionID string) int {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.TokensSaved
 }
 
 // folderModel returns the Ollama model used for SITREP distillation
@@ -220,7 +385,7 @@ func buildChain() []Provider {
 			URL:        getEnv("CLAUDE_URL", "https://api.anthropic.com/v1/messages"),
 			APIKey:     key,
 			AuthHeader: "x-api-key",
-			Model:      getEnv("CLAUDE_MODEL", "claude-haiku-4-5"),
+			Model:      getEnv("CLAUDE_MODEL", "claude-3-5-haiku-20241022"),
 		})
 	}
 
@@ -266,6 +431,7 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 		for {
 			time.Sleep(60 * time.Second)
 			log.Printf("🏥 Health check running...")
+
 			for i, p := range chain {
 				if p.Name == "ollama" {
 					continue
@@ -324,31 +490,4 @@ func startHealthCheck(chain []Provider, active *ActiveProvider) {
 			}
 		}
 	}()
-}
-
-func (s *SessionStore) GetAll(sessionID string) []map[string]string {
-	s.mu.RLock()
-	state, ok := s.sessions[sessionID]
-	s.mu.RUnlock()
-	if !ok {
-		return nil
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	all := []map[string]string{}
-	all = append(all, state.Anchor...)
-	all = append(all, state.Tail...)
-	return all
-}
-
-func (s *SessionStore) GetTokensSaved(sessionID string) int {
-	s.mu.RLock()
-	state, ok := s.sessions[sessionID]
-	s.mu.RUnlock()
-	if !ok {
-		return 0
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.TokensSaved
 }

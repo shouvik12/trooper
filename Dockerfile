@@ -3,10 +3,7 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 COPY go.mod ./
-COPY main.go ./
-COPY providers.go ./
-COPY classifier.go ./
-
+COPY *.go ./
 RUN go build -o trooper .
 
 # ── Run stage ─────────────────────────────────────────────────────────────────
