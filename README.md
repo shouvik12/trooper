@@ -436,6 +436,7 @@ Covers: turn classifier, code detection, context compaction, token estimation, s
 - Featured on [PatentLLM](https://media.patentllm.org/news/local-ai/qwen3-6-27b-local-inference-on-rtx-3090-with-native-vllm-oll-20260502) — covered alongside Qwen3.6-27B RTX 3090 local inference story (May 2026)
 - Featured on [dev.to](https://dev.to/soytuber/qwen36-27b-local-inference-on-rtx-3090-with-native-vllm-ollama-fallback-2jgg) — local AI tooling roundup (May 2026)
 - Cited by [kylebrodeur](https://github.com/kylebrodeur) as inspiration for *"robust, transparent HTTP rate-limit fallback triggers"*
+- Listed on [UND-RDR](https://undrdr.com) — underrated GitHub repo discovery index, tagged Fresh → Rising momentum (May 2026)
 
 ---
 
