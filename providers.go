@@ -61,12 +61,15 @@ type FallbackEvent struct {
 // ── Rolling SITREP Structures ─────────────────────────────────────────────────
 
 type SessionState struct {
-	Anchor      []map[string]string // Turns 1-2 (Immortal context)
-	SITREP      string              // Rolling distilled summary
-	Tail        []map[string]string // Recent turns
-	TokensSaved int                 // cumulative tokens saved by routing to Ollama
-	LastSeen    time.Time
-	mu          sync.Mutex
+	Anchor            []map[string]string // Turns 1-2 (Immortal context)
+	SITREP            string              // Rolling distilled summary
+	Tail              []map[string]string // Recent turns
+	TokensSaved       int                 // cumulative tokens saved by routing to Ollama
+	FullHistoryTokens int                 // tokens in full history before compression
+	CompressedTokens  int                 // tokens actually sent after SITREP compression
+	TotalTokensSeen   int                 // running total of all tokens ever seen in session
+	LastSeen          time.Time
+	mu                sync.Mutex
 
 	// Dashboard fields
 	entries   []MessageEntry
@@ -140,14 +143,21 @@ func (s *SessionStore) Append(sessionID string, messages []map[string]string) {
 			Content: msg["content"],
 			At:      time.Now(),
 		})
+		// Track total tokens seen for compression ratio
+		msgJSON, _ := json.Marshal(msg)
+		state.TotalTokensSeen += len(msgJSON) / 4
 	}
 
 	state.LastSeen = time.Now()
 
 	if len(state.Tail) > TailThreshold {
-		toCompress := make([]map[string]string, 5)
-		copy(toCompress, state.Tail[:5])
-		state.Tail = state.Tail[5:]
+		compressCount := 5
+		if len(state.Tail) < compressCount {
+			compressCount = len(state.Tail)
+		}
+		toCompress := make([]map[string]string, compressCount)
+		copy(toCompress, state.Tail[:compressCount])
+		state.Tail = state.Tail[compressCount:]
 		go s.updateSITREP(sessionID, toCompress)
 	}
 }
@@ -180,6 +190,9 @@ func (s *SessionStore) AppendWithMeta(sessionID string, entries []MessageEntry) 
 		} else {
 			state.Tail = append(state.Tail, msg)
 		}
+		// Track total tokens seen for compression ratio
+		msgJSON, _ := json.Marshal(msg)
+		state.TotalTokensSeen += len(msgJSON) / 4
 	}
 	state.LastSeen = time.Now()
 }
@@ -263,14 +276,35 @@ func (s *SessionStore) updateSITREP(sessionID string, newTurns []map[string]stri
 		return
 	}
 
-	turnsJSON, _ := json.Marshal(newTurns)
-	prompt := fmt.Sprintf(`Update SITREP. Protocol: "direct" (v2).
+	// Filter to user messages only — don't let Qwen see assistant responses
+	var userTurns []map[string]string
+	for _, turn := range newTurns {
+		if turn["role"] == "user" {
+			userTurns = append(userTurns, turn)
+		}
+	}
+	if len(userTurns) == 0 {
+		return
+	}
+	turnsJSON, _ := json.Marshal(userTurns)
 
-Rules: No filler, use word-level abbreviations, technical acronyms only.
+	prompt := fmt.Sprintf(`You are a memory extractor for an AI agent proxy.
+From the user turns below, extract only what the agent needs to keep working.
 
-Current SITREP: %s
+Output in this exact format:
+INTENT: 
+DECISIONS: 
+CONSTRAINTS:
+OPEN: 
+ENTITIES: 
 
-New History to integrate: %s`, state.SITREP, string(turnsJSON))
+Current SITREP:
+%s
+
+New turns:
+%s
+
+Output only the updated SITREP. Nothing else.`, state.SITREP, string(turnsJSON))
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"model":  folderModel(),
@@ -296,6 +330,7 @@ New History to integrate: %s`, state.SITREP, string(turnsJSON))
 
 	state.mu.Lock()
 	state.SITREP = res.Response
+
 	state.mu.Unlock()
 
 	log.Printf("📡 SITREP updated for session: %s", sessionID)
@@ -313,6 +348,14 @@ func (s *SessionStore) GetTripleAnchor(sessionID string) []map[string]string {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	// Measure full history tokens
+	var fullHistory []map[string]string
+	fullHistory = append(fullHistory, state.Anchor...)
+	fullHistory = append(fullHistory, state.Tail...)
+	fullJSON, _ := json.Marshal(fullHistory)
+	state.FullHistoryTokens = len(fullJSON) / 4
+
+	// Build compressed payload
 	payload := append([]map[string]string{}, state.Anchor...)
 	if state.SITREP != "" {
 		payload = append(payload, map[string]string{
@@ -320,7 +363,11 @@ func (s *SessionStore) GetTripleAnchor(sessionID string) []map[string]string {
 			"content": fmt.Sprintf("[STATE_SITREP: %s]", state.SITREP),
 		})
 	}
-	return append(payload, state.Tail...)
+	payload = append(payload, state.Tail...)
+	compressedJSON, _ := json.Marshal(payload)
+	state.CompressedTokens = len(compressedJSON) / 4
+
+	return payload
 }
 
 // GetAll returns all messages flat for a session
@@ -354,9 +401,137 @@ func (s *SessionStore) GetTokensSaved(sessionID string) int {
 	return state.TokensSaved
 }
 
+// GetCompressionRatio returns the percentage of tokens saved via SITREP compression
+func (s *SessionStore) GetCompressionRatio(sessionID string) string {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return "0%"
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.TotalTokensSeen == 0 {
+		return "—"
+	}
+	saved := float64(state.TotalTokensSeen-state.CompressedTokens) / float64(state.TotalTokensSeen) * 100
+	if saved < 0 {
+		saved = 0
+	}
+	return fmt.Sprintf("%.0f%%", saved)
+}
+
+// GetResolvedLoops extracts resolved decisions and constraints from structured SITREP
+func (s *SessionStore) GetResolvedLoops(sessionID string) []string {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.SITREP == "" {
+		return nil
+	}
+
+	var loops []string
+	inDecisions := false
+	inConstraints := false
+
+	for _, line := range strings.Split(state.SITREP, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "DECISIONS:") {
+			inDecisions = true
+			inConstraints = false
+			content := strings.TrimSpace(strings.TrimPrefix(line, "DECISIONS:"))
+			if content != "" {
+				loops = append(loops, content)
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "CONSTRAINTS:") {
+			inConstraints = true
+			inDecisions = false
+			content := strings.TrimSpace(strings.TrimPrefix(line, "CONSTRAINTS:"))
+			if content != "" {
+				loops = append(loops, content)
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "INTENT:") ||
+			strings.HasPrefix(line, "OPEN:") ||
+			strings.HasPrefix(line, "ENTITIES:") {
+			inDecisions = false
+			inConstraints = false
+			continue
+		}
+		if inDecisions || inConstraints {
+			clean := strings.TrimLeft(line, "-• ")
+			if clean != "" {
+				loops = append(loops, clean)
+			}
+		}
+	}
+
+	return loops
+}
+
+// GetRawSITREP returns the raw structured SITREP string for display
+func (s *SessionStore) GetRawSITREP(sessionID string) string {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return "No SITREP yet"
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.SITREP == "" {
+		return "Building..."
+	}
+	return state.SITREP
+}
+
+// HasSITREP returns true if the session has a non-empty SITREP
+func (s *SessionStore) HasSITREP(sessionID string) bool {
+	s.mu.RLock()
+	state, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.SITREP != ""
+}
+
+// BuildCompressedBody rewrites the request body with compressed history (Anchor + SITREP + Tail)
+func (s *SessionStore) BuildCompressedBody(sessionID string, originalBody []byte) []byte {
+	history := s.GetTripleAnchor(sessionID)
+	if len(history) == 0 {
+		return nil
+	}
+	var reqMap map[string]interface{}
+	if err := json.Unmarshal(originalBody, &reqMap); err != nil {
+		return nil
+	}
+	reqMap["messages"] = history
+	compressed, err := json.Marshal(reqMap)
+	if err != nil {
+		return nil
+	}
+	return compressed
+}
+
 // folderModel returns the Ollama model used for SITREP distillation
 func folderModel() string {
-	return getEnv("OLLAMA_MODEL", "qwen2.5:3b")
+	return getEnv("SITREP_MODEL", getEnv("OLLAMA_MODEL", "qwen2.5:3b"))
 }
 
 // ── Health Check URL ──────────────────────────────────────────────────────────

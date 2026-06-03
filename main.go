@@ -209,7 +209,14 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			}
 
 			// Try cloud provider
-			resp, err := callProvider(body, r, provider)
+			cloudBody := body
+			if store.HasSITREP(sessionID) {
+				if compressed := store.BuildCompressedBody(sessionID, body); compressed != nil {
+					cloudBody = compressed
+					log.Printf("🗜️  History compressed for %s", provider.Name)
+				}
+			}
+			resp, err := callProvider(cloudBody, r, provider)
 			if err != nil {
 				log.Printf("⚠️  %s network error: %v — trying next", provider.Name, err)
 				if fallbackCount == 0 {
@@ -1202,6 +1209,8 @@ func dashboardHandler(store *SessionStore) http.HandlerFunc {
 		completed := extractCompletedSteps(messages)
 		sitrep := buildSITREP(messages, extractLatestUserMessage2(messages))
 		tokensSaved := store.GetTokensSaved(sessionID)
+		compressionRatio := store.GetCompressionRatio(sessionID)
+		rawSITREP := store.GetRawSITREP(sessionID)
 		startTime := store.GetStartTime(sessionID)
 		duration := ""
 		if !startTime.IsZero() {
@@ -1228,6 +1237,7 @@ func dashboardHandler(store *SessionStore) http.HandlerFunc {
 			sitrep.Intent,
 			currentProvider,
 			tokensSaved,
+			compressionRatio,
 			fmt.Sprintf("%.0f%%", sitrep.Confidence*100),
 			duration,
 			len(fallbackEvents),
@@ -1240,6 +1250,7 @@ func dashboardHandler(store *SessionStore) http.HandlerFunc {
 			renderOpenLoopsNew(sitrep.OpenLoops),
 			len(sitrep.ResolvedLoops),
 			renderResolvedLoops(sitrep.ResolvedLoops),
+			rawSITREP,
 			renderTranscript(entries),
 		)
 	}
@@ -1350,6 +1361,10 @@ body::before{content:'';position:fixed;top:0;left:0;right:0;bottom:0;background:
     <span class="mval">%d</span>
   </div>
   <div class="metric">
+    <span class="mlabel">History compressed</span>
+    <span class="mval green">%s</span>
+  </div>
+  <div class="metric">
     <span class="mlabel">Confidence</span>
     <span class="mval green">%s</span>
   </div>
@@ -1387,6 +1402,11 @@ body::before{content:'';position:fixed;top:0;left:0;right:0;bottom:0;background:
   <div class="panel no-right">
     <div class="ph"><div class="ph-icon green">&#x2705;</div><span class="pt">Resolved loops</span><span class="pc">%d</span></div>
     %s
+  </div>
+
+  <div class="panel full no-right">
+    <div class="ph"><div class="ph-icon green">&#x1F4E1;</div><span class="pt">Session SITREP</span></div>
+    <pre style="font-size:11px;color:#79c0ff;white-space:pre-wrap;line-height:1.6;margin:0">%s</pre>
   </div>
 
   <div class="panel full no-right no-bottom">
