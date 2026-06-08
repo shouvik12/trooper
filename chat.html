@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trooper Chat v2</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+:root {
+  --bg:#090b0e;--s1:#0d1117;--s2:#111820;--s3:#182030;
+  --border:rgba(255,255,255,0.055);--border2:rgba(255,255,255,0.09);
+  --amber:#e8a838;--amber-d:rgba(232,168,56,0.11);
+  --green:#3fb950;--green-d:rgba(63,185,80,0.10);
+  --purple:#a78bfa;--purple-d:rgba(167,139,250,0.09);
+  --text:#e2e8f0;--dim:#8b949e;--mute:#3d4451;
+  --font:'JetBrains Mono',monospace;--r:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px;}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.7)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+@keyframes dotbounce{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-4px);opacity:1}}
+.fadein{animation:fadeUp .2s ease}
+.pulse{animation:pulse 2s ease infinite}
+button{cursor:pointer;font-family:var(--font)}
+
+.topbar{height:50px;display:flex;align-items:center;gap:10px;padding:0 16px;background:var(--s1);border-bottom:1px solid var(--border);flex-shrink:0}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;color:var(--amber)}
+.logo-box{width:26px;height:26px;border-radius:7px;background:var(--amber-d);border:1px solid rgba(232,168,56,0.28);display:flex;align-items:center;justify-content:center;font-size:13px}
+.pill{display:flex;align-items:center;gap:5px;font-size:10px;padding:3px 9px;border-radius:20px;border:1px solid}
+.pill.live{color:var(--green);background:var(--green-d);border-color:rgba(63,185,80,0.22)}
+.pill.local{color:var(--amber);background:var(--amber-d);border-color:rgba(232,168,56,0.22)}
+.pill.cloud{color:var(--purple);background:var(--purple-d);border-color:rgba(167,139,250,0.22)}
+.tabs{display:flex;gap:2px;margin-left:auto;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:3px}
+.tab{font-size:11px;font-weight:500;padding:4px 14px;border-radius:6px;border:1px solid transparent;cursor:pointer;color:var(--dim);background:transparent;transition:all .15s}
+.tab.active{background:var(--s3);color:var(--amber);border-color:rgba(232,168,56,0.18)}
+.session-id{font-size:10px;color:var(--mute);margin-left:6px}
+
+.panel{display:none;flex:1;overflow:hidden;flex-direction:column;min-height:0}
+.panel.active{display:flex}
+#panel-chat{flex-direction:row}
+
+.history{width:190px;background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.history-header{padding:10px 12px 8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--mute);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.btn-new{font-size:10px;font-weight:600;padding:3px 7px;border-radius:5px;background:var(--amber-d);border:1px solid rgba(232,168,56,0.25);color:var(--amber)}
+.session-list{flex:1;overflow-y:auto;padding:6px}
+.session-item{padding:8px 10px;border-radius:7px;margin-bottom:3px;border:1px solid transparent;cursor:pointer;transition:all .15s}
+.session-item:hover{background:var(--s2);border-color:var(--border)}
+.session-item.active{background:var(--s3);border-color:rgba(232,168,56,0.2)}
+.si-name{font-size:11px;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.si-meta{font-size:10px;color:var(--dim)}
+
+.chat-center{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;min-width:0}
+.messages{flex:1;overflow-y:auto;padding:18px 0;display:flex;flex-direction:column;scroll-behavior:smooth}
+.msg-row{display:flex;padding:4px 18px;gap:10px}
+.msg-row.user{justify-content:flex-end}
+.avatar{width:26px;height:26px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;margin-top:2px}
+.avatar.trooper{background:var(--amber-d);border:1px solid rgba(232,168,56,0.22);color:var(--amber)}
+.avatar.claude{background:var(--purple-d);border:1px solid rgba(167,139,250,0.22);color:var(--purple)}
+.avatar.user{background:var(--s3);border:1px solid var(--border2);color:var(--dim);font-size:10px;font-weight:700}
+.bubble-wrap{display:flex;flex-direction:column;max-width:65%;gap:4px}
+.msg-row.user .bubble-wrap{align-items:flex-end}
+.bmeta{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--mute);padding:0 3px}
+.bprovider{font-weight:600;font-size:10px}
+.bprovider.qwen{color:var(--amber)}.bprovider.claude{color:var(--purple)}.bprovider.user{color:var(--dim)}
+.bubble{padding:10px 14px;border-radius:var(--r);font-size:13px;line-height:1.65}
+.bubble.user{background:var(--s3);border:1px solid var(--border2);border-bottom-right-radius:3px}
+.bubble.qwen{background:var(--s2);border:1px solid var(--border);border-bottom-left-radius:3px}
+.bubble.claude{background:var(--purple-d);border:1px solid rgba(167,139,250,0.16);border-bottom-left-radius:3px}
+.bubble code{font-size:11px;background:rgba(255,255,255,0.07);padding:1px 5px;border-radius:3px;color:var(--amber)}
+.actions{display:flex;align-items:center;gap:6px;padding:0 3px;flex-wrap:wrap;margin-top:2px}
+.act-btn{font-size:10px;font-weight:600;padding:3px 9px;border-radius:5px;border:1px solid;transition:all .15s}
+.act-escalate{color:var(--purple);background:var(--purple-d);border-color:rgba(167,139,250,0.28)}
+.act-escalate:hover{background:rgba(167,139,250,0.2)}
+.act-local{color:var(--amber);background:var(--amber-d);border-color:rgba(232,168,56,0.28)}
+.act-local:hover{background:rgba(232,168,56,0.2)}
+.act-accept{color:var(--green);background:var(--green-d);border-color:rgba(63,185,80,0.22)}
+.act-done{font-size:10px;color:var(--green);padding:3px 0}
+.act-escalated{font-size:10px;color:var(--purple);padding:3px 0}
+.escalate-banner{font-size:10px;color:var(--purple);background:var(--purple-d);border:1px solid rgba(167,139,250,0.16);border-radius:6px;padding:5px 9px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.divider{display:flex;align-items:center;gap:10px;padding:5px 18px;font-size:10px;color:var(--mute);letter-spacing:.4px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.thinking-bubble{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r);border-bottom-left-radius:3px;color:var(--amber);font-size:12px}
+.dots{display:flex;gap:4px}
+.dots span{width:5px;height:5px;border-radius:50%;background:currentColor}
+.dots span:nth-child(1){animation:dotbounce 1.2s ease infinite}
+.dots span:nth-child(2){animation:dotbounce 1.2s .2s ease infinite}
+.dots span:nth-child(3){animation:dotbounce 1.2s .4s ease infinite}
+
+.sitrep-sb{width:220px;border-left:1px solid var(--border);background:var(--s1);overflow-y:auto;flex-shrink:0}
+.ss-section{border-bottom:1px solid var(--border);padding:11px 13px}
+.ss-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--mute);margin-bottom:8px}
+.ss-field{margin-bottom:6px}
+.ss-key{font-size:9px;text-transform:uppercase;letter-spacing:.7px;color:var(--mute);margin-bottom:2px}
+.ss-val{font-size:11px;color:var(--dim);line-height:1.4}
+.loop-row{display:flex;align-items:flex-start;gap:6px;font-size:11px;color:var(--dim);margin-bottom:5px;line-height:1.4}
+.ldot{width:5px;height:5px;border-radius:50%;flex-shrink:0;margin-top:4px}
+.ldot.open{background:#d29922}.ldot.resolved{background:var(--green)}
+.metric-line{display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:5px}
+.ml-k{color:var(--mute)}.ml-v{font-weight:600}
+
+.input-bar{padding:12px 16px;background:var(--s1);border-top:1px solid var(--border);flex-shrink:0}
+.input-row{display:flex;align-items:flex-end;gap:9px;background:var(--s2);border:1px solid var(--border2);border-radius:var(--r);padding:9px 12px;transition:border-color .15s,box-shadow .15s}
+.input-row:focus-within{border-color:rgba(232,168,56,0.32);box-shadow:0 0 0 3px rgba(232,168,56,0.05)}
+.route-badge{font-size:10px;font-weight:600;padding:3px 8px;border-radius:5px;flex-shrink:0;border:1px solid;color:var(--amber);background:var(--amber-d);border-color:rgba(232,168,56,0.28)}
+.route-badge.cloud{color:var(--purple);background:var(--purple-d);border-color:rgba(167,139,250,0.28)}
+.textarea{flex:1;background:transparent;border:none;outline:none;font-family:var(--font);font-size:13px;color:var(--text);resize:none;line-height:1.5;max-height:110px;min-height:20px}
+.textarea::placeholder{color:var(--mute)}
+.send-btn{width:30px;height:30px;border-radius:7px;background:var(--amber);border:none;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#090b0e;font-size:14px;font-weight:700;transition:all .15s}
+.send-btn:hover{background:#f0b840}
+.input-hint{font-size:10px;color:var(--mute);margin-top:6px;text-align:center}
+.input-hint kbd{font-size:9px;background:var(--s3);border:1px solid var(--border2);border-radius:3px;padding:1px 4px;color:var(--dim)}
+
+#panel-dashboard{overflow-y:auto}
+.dash{padding:18px;display:flex;flex-direction:column;gap:14px}
+.metrics-strip{display:grid;grid-template-columns:repeat(5,1fr);background:var(--s1);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.mc{padding:13px 15px;border-right:1px solid var(--border)}
+.mc:last-child{border-right:none}
+.mc-k{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--mute);margin-bottom:5px}
+.mc-v{font-size:16px;font-weight:700}
+.mc-v.green{color:var(--green)}.mc-v.amber{color:var(--amber)}.mc-v.purple{color:var(--purple)}.mc-v.sm{font-size:12px}
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.dash-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:15px}
+.dash-card.full{grid-column:1/-1}
+.dc-head{display:flex;align-items:center;gap:8px;margin-bottom:11px}
+.dc-icon{width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0}
+.dc-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+.dc-ct{font-size:10px;color:var(--mute);margin-left:auto;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:1px 7px}
+.dloop{display:flex;align-items:flex-start;gap:7px;padding:6px 9px;border-radius:6px;margin-bottom:5px;font-size:11px;line-height:1.4}
+.dloop.open{background:rgba(210,153,34,0.06);border:1px solid rgba(210,153,34,0.14)}
+.dloop.resolved{background:rgba(63,185,80,0.04);border:1px solid rgba(63,185,80,0.12)}
+.dloop-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;margin-top:4px}
+.dloop-dot.open{background:#d29922}.dloop-dot.resolved{background:var(--green)}
+.dloop-text.open{color:#e3b341}.dloop-text.resolved{color:#56d364;text-decoration:line-through;opacity:.7}
+.sitrep-raw{font-size:11px;color:#7dd3fc;white-space:pre-wrap;line-height:1.65;background:var(--bg);border:1px solid var(--border2);border-radius:7px;padding:12px;margin-top:4px}
+.dt{display:flex;flex-direction:column;gap:7px}
+.dt-row{padding:9px 12px;border-radius:8px}
+.dt-row.user{background:var(--s2);border:1px solid var(--border)}
+.dt-row.assistant{background:rgba(96,165,250,0.03);border:1px solid rgba(96,165,250,0.1)}
+.dt-row.escalated{background:var(--purple-d);border:1px solid rgba(167,139,250,0.16)}
+.dt-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+.dt-role{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px}
+.dt-role.user{color:var(--mute)}.dt-role.qwen{color:var(--amber)}.dt-role.claude{color:var(--purple)}
+.dt-prov{font-size:10px;background:var(--s3);border:1px solid var(--border);border-radius:10px;padding:1px 7px;color:var(--dim)}
+.dt-time{font-size:10px;color:var(--mute);margin-left:auto}
+.dt-text{font-size:12px;color:var(--dim);line-height:1.5}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo"><div class="logo-box">&#x1FA96;</div>Trooper</div>
+  <div class="pill live"><div class="pulse" style="width:5px;height:5px;border-radius:50%;background:currentColor"></div>live</div>
+  <div class="pill local" id="providerPill"><div class="pulse" style="width:5px;height:5px;border-radius:50%;background:currentColor"></div><span id="providerName">qwen2.5:3b</span></div>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('chat',this)">Chat</button>
+    <button class="tab" onclick="switchTab('dashboard',this)">Dashboard</button>
+  </div>
+  <span class="session-id" id="sessionLabel">-</span>
+</div>
+
+<div class="panel active" id="panel-chat">
+  <div class="history">
+    <div class="history-header">Sessions<button class="btn-new" onclick="newSession()">+ New</button></div>
+    <div class="session-list" id="sessionList"></div>
+  </div>
+
+  <div class="chat-center">
+    <div class="messages" id="messages">
+      <div class="divider">select a session or start a new one</div>
+    </div>
+    <div class="input-bar">
+      <div class="input-row">
+        <button class="route-badge" id="routeBadge" onclick="toggleRoute()">Qwen</button>
+        <textarea class="textarea" id="inputField" placeholder="Ask anything..." rows="1"
+          onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        <button class="send-btn" onclick="sendMessage()">-&gt;</button>
+      </div>
+      <div class="input-hint"><kbd>Enter</kbd> send &middot; <kbd>Shift+Enter</kbd> newline &middot; click badge to toggle route</div>
+    </div>
+  </div>
+
+  <div class="sitrep-sb">
+    <div class="ss-section">
+      <div class="ss-label">SITREP</div>
+      <div class="ss-field"><div class="ss-key">Intent</div><div class="ss-val" id="sitrepIntent" style="color:var(--amber)">-</div></div>
+      <div class="ss-field"><div class="ss-key">Stage</div><div class="ss-val" id="sitrepStage">-</div></div>
+      <div class="ss-field"><div class="ss-key">Confidence</div><div class="ss-val" id="sitrepConf" style="color:var(--green)">-</div></div>
+    </div>
+    <div class="ss-section">
+      <div class="ss-label">Open Loops</div>
+      <div id="openLoops"><div class="loop-row"><div class="ldot open"></div>-</div></div>
+    </div>
+    <div class="ss-section">
+      <div class="ss-label">Metrics</div>
+      <div class="metric-line"><span class="ml-k">Tokens saved</span><span class="ml-v" style="color:var(--green)" id="tokensSaved">0</span></div>
+      <div class="metric-line"><span class="ml-k">Escalations</span><span class="ml-v" style="color:var(--purple)" id="escalCount">0</span></div>
+      <div class="metric-line"><span class="ml-k">Route</span><span class="ml-v" style="color:var(--amber)" id="routeLabel">local</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel-dashboard">
+  <iframe id="dashFrame" src="" style="flex:1;width:100%;height:100%;border:none;"></iframe>
+</div>
+
+<script>
+var route = 'local';
+var _localModel = 'local';
+var escalations = 0;
+var tokensSaved = 0;
+var currentSession = null;
+var msgId = 0;
+
+function init() {
+  fetch('/sessions')
+    .then(function(r){ return r.json(); })
+    .then(function(sessions){
+      var list = document.getElementById('sessionList');
+      if (!sessions || sessions.length === 0) {
+        list.innerHTML = '<div style="padding:12px;font-size:11px;color:var(--mute)">No sessions yet. Start chatting.</div>';
+        return;
+      }
+      sessions.forEach(function(s, i) {
+        var el = document.createElement('div');
+        el.className = 'session-item' + (i === 0 ? ' active' : '');
+        el.innerHTML = '<div class="si-name">' + s + '</div><div class="si-meta">active</div>';
+        el.onclick = function(){ loadSession(s, el); };
+        list.appendChild(el);
+      });
+      loadSession(sessions[0], list.firstChild);
+    })
+    .catch(function(){
+      document.getElementById('sessionList').innerHTML = '<div style="padding:12px;font-size:11px;color:var(--mute)">No sessions yet.</div>';
+    });
+  fetch('/config')
+    .then(function(r){ return r.json(); })
+    .then(function(cfg){
+      _localModel = cfg.model;
+      document.getElementById('providerName').textContent = cfg.model;
+      document.getElementById('routeBadge').textContent = cfg.model;
+    })
+    .catch(function(){});
+}
+
+function loadSession(id, el) {
+  document.querySelectorAll('.session-item').forEach(function(s){ s.classList.remove('active'); });
+  if (el) el.classList.add('active');
+  currentSession = id;
+  document.getElementById('sessionLabel').textContent = id;
+}
+
+function newSession() {
+  var id = 'session-' + Date.now();
+  var list = document.getElementById('sessionList');
+  var el = document.createElement('div');
+  el.className = 'session-item active';
+  el.innerHTML = '<div class="si-name">' + id + '</div><div class="si-meta">new</div>';
+  el.onclick = function(){ loadSession(id, el); };
+  list.prepend(el);
+  document.querySelectorAll('.session-item').forEach(function(s){ s.classList.remove('active'); });
+  el.classList.add('active');
+  loadSession(id, el);
+  document.getElementById('messages').innerHTML = '<div class="divider">new session</div>';
+}
+
+function appendMsg(role, text, provider, animate) {
+  var msgs = document.getElementById('messages');
+  var id = 'msg' + (++msgId);
+  var isUser = role === 'user';
+  var provClass = provider === 'claude' ? 'claude' : 'qwen';
+  var provLabel = provider === 'claude' ? 'Claude cloud' : _localModel + ' local';
+
+  var av = isUser
+    ? '<div class="avatar user">U</div>'
+    : (provider === 'claude'
+        ? '<div class="avatar claude">C</div>'
+        : '<div class="avatar trooper">&#x1FA96;</div>');
+
+  var actions = isUser ? '' :
+    '<div class="actions" id="act' + id + '">' +
+    '<button class="act-btn act-escalate" onclick="escalate(\'' + id + '\',\'' + text.substring(0,80).replace(/'/g, '') + '\')">&#x2191; Escalate</button>' +
+    '<button class="act-btn act-accept" onclick="accept(\'' + id + '\')">&#x2713; Good</button>' +
+    '</div>';
+
+  var meta = isUser
+    ? '<span class="bprovider user">you</span>'
+    : '<span class="bprovider ' + provClass + '">' + provLabel + '</span>';
+
+  var div = document.createElement('div');
+  div.className = 'msg-row' + (isUser ? ' user' : '') + (animate ? ' fadein' : '');
+  div.id = id;
+  div.innerHTML =
+    (!isUser ? av : '') +
+    '<div class="bubble-wrap">' +
+    '<div class="bmeta">' + meta + '<span>now</span></div>' +
+    '<div class="bubble ' + (isUser ? 'user' : provClass) + '">' + escHtml(text) + '</div>' +
+    actions +
+    '</div>' +
+    (isUser ? av : '');
+  msgs.appendChild(div);
+
+  scrollBottom();
+  return id;
+}
+
+function sendMessage() {
+  var field = document.getElementById('inputField');
+  var text = field.value.trim();
+  if (!text) return;
+  if (!currentSession) newSession();
+
+  appendMsg('user', text, 'user', true);
+  field.value = '';
+  field.style.height = 'auto';
+  showThinking(route === 'cloud');
+
+  var model = route === 'cloud' ? 'claude-haiku-4-5-20251001' : _localModel;
+  var headers = {
+    'Content-Type': 'application/json',
+    'X-Session-ID': currentSession
+  };
+  if (route === 'local') headers['X-Force-Local'] = 'true';
+
+  fetch('/v1/messages', {
+    method: 'POST',
+    headers: headers,
+    body: JSON.stringify({ model: model, max_tokens: 1024, messages: [{ role: 'user', content: text }] })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    hideThinking();
+    var content = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text : 'No response';
+    appendMsg('assistant', content, route === 'cloud' ? 'claude' : 'qwen', true);
+    tokensSaved += 12;
+    updateMetrics();
+  })
+  .catch(function(err){
+    hideThinking();
+    appendMsg('assistant', 'Error: ' + err.message, 'qwen', true);
+  });
+}
+
+function escalateById(btn) {
+  var mId = btn.getAttribute('data-msgid');
+  // Walk back through siblings to find the user message that triggered this response
+  var msgRow = document.getElementById(mId);
+  var userText = '';
+  var prev = msgRow ? msgRow.previousElementSibling : null;
+  while (prev) {
+    if (prev.classList.contains('user')) {
+      var bubble = prev.querySelector('.bubble');
+      if (bubble) { userText = bubble.textContent.trim(); break; }
+    }
+    prev = prev.previousElementSibling;
+  }
+  escalate(mId, userText || '');
+}
+
+function escalate(mId, originalText) {
+  var acts = document.getElementById('act' + mId);
+  if (acts) acts.innerHTML = '<span class="act-escalated">&#x2191; escalating...</span>';
+  escalations++;
+  updateMetrics();
+  showThinking(true);
+
+  // Fetch session history from Trooper — UI never owns state
+  fetch('/session/' + currentSession)
+    .then(function(r){ return r.json(); })
+    .then(function(sessionMessages) {
+      // Ensure last message is from user
+      if (!sessionMessages || sessionMessages.length === 0) {
+        sessionMessages = [{ role: 'user', content: originalText }];
+      } else if (sessionMessages[sessionMessages.length-1].role === 'assistant') {
+        sessionMessages.push({ role: 'user', content: originalText });
+      }
+
+      return fetch('/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': currentSession,
+          'X-Force-Cloud': 'true'
+        },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: sessionMessages })
+      });
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+    hideThinking();
+    var content = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text : 'No response';
+    // Stay on Claude until Back to local is explicitly clicked
+    route = 'cloud';
+    updateRouteBadge();
+    var msgs = document.getElementById('messages');
+    var div = document.createElement('div');
+    div.className = 'divider fadein';
+    div.innerHTML = '<div style="flex:1;height:1px;background:var(--border)"></div>escalated to Claude<div style="flex:1;height:1px;background:var(--border)"></div>';
+    msgs.appendChild(div);
+    var newId = appendMsg('assistant', content, 'claude', true);
+    setTimeout(function(){
+      var acts2 = document.getElementById('act' + newId);
+      if (acts2) acts2.innerHTML =
+        '<button class="act-btn act-local" onclick="backToLocal(\'' + newId + '\')">&#x21A9; Back to local</button>' +
+        '<button class="act-btn act-accept" onclick="accept(\'' + newId + '\')">&#x2713; Accept</button>';
+    }, 100);
+  })
+  .catch(function(err){
+    hideThinking();
+    appendMsg('assistant', 'Escalation failed: ' + err.message, 'claude', true);
+  });
+}
+
+function backToLocal(mId) {
+  var acts = document.getElementById('act' + mId);
+  if (acts) acts.innerHTML = '<span class="act-done">&#x21A9; back to local</span>';
+  route = 'local';
+  updateRouteBadge();
+  var msgs = document.getElementById('messages');
+  var div = document.createElement('div');
+  div.className = 'divider fadein';
+  div.innerHTML = '<div style="flex:1;height:1px;background:var(--border)"></div>returned to local<div style="flex:1;height:1px;background:var(--border)"></div>';
+  msgs.appendChild(div);
+  scrollBottom();
+}
+
+function accept(mId) {
+  var acts = document.getElementById('act' + mId);
+  if (acts) acts.innerHTML = '<span class="act-done">&#x2713; accepted</span>';
+}
+
+function toggleRoute() {
+  route = route === 'local' ? 'cloud' : 'local';
+  updateRouteBadge();
+}
+
+function updateRouteBadge() {
+  var badge = document.getElementById('routeBadge');
+  var pill = document.getElementById('providerPill');
+  var name = document.getElementById('providerName');
+  if (route === 'cloud') {
+    badge.textContent = 'Claude'; badge.className = 'route-badge cloud';
+    pill.className = 'pill cloud'; name.textContent = 'claude-3-5';
+  } else {
+    badge.textContent = _localModel; badge.className = 'route-badge';
+    pill.className = 'pill local'; name.textContent = _localModel;
+  }
+  document.getElementById('routeLabel').textContent = route;
+}
+
+function updateMetrics() {
+  document.getElementById('tokensSaved').textContent = tokensSaved;
+  document.getElementById('escalCount').textContent = escalations;
+}
+
+function showThinking(isCloud) {
+  var msgs = document.getElementById('messages');
+  var div = document.createElement('div');
+  div.className = 'msg-row fadein';
+  div.id = 'thinking-row';
+  div.innerHTML =
+    '<div class="avatar trooper">&#x1FA96;</div>' +
+    '<div class="bubble-wrap">' +
+    '<div class="thinking-bubble">' +
+    '<div class="dots"><span></span><span></span><span></span></div>' +
+    (isCloud ? 'Claude thinking...' : _localModel + ' thinking...') +
+    '</div></div>';
+  msgs.appendChild(div);
+  scrollBottom();
+}
+
+function hideThinking() {
+  var el = document.getElementById('thinking-row');
+  if (el) el.remove();
+}
+
+function switchTab(tab, el) {
+  document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+  el.classList.add('active');
+  document.querySelectorAll('.panel').forEach(function(p){ p.classList.remove('active'); });
+  document.getElementById('panel-' + tab).classList.add('active');
+if (tab === 'dashboard') {
+    if (currentSession) {
+        document.getElementById('dashFrame').src = '/dashboard?session=' + currentSession;
+    } else {
+        document.getElementById('dashFrame').src = '/dashboard';
+    }
+}
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+}
+
+function scrollBottom() {
+  var m = document.getElementById('messages');
+  if (m) setTimeout(function(){ m.scrollTop = m.scrollHeight; }, 50);
+}
+
+function escHtml(t) {
+  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+init();
+</script>
+</body>
+</html>

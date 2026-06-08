@@ -450,3 +450,37 @@ setTimeout(() => location.reload(), 5000);
 </script>
 </body>
 </html>`
+
+var buildToken = fmt.Sprintf("%d", time.Now().UnixNano())
+
+func chatHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("v") != buildToken {
+			http.Redirect(w, r, "/chat?v="+buildToken, http.StatusFound)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		http.ServeFile(w, r, "chat.html")
+	}
+}
+
+func configHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"model":"%s"}`, getEnv("OLLAMA_MODEL", "ollama"))
+	}
+}
+func sessionDetailHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		msgs := store.GetAll(id)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(msgs)
+	}
+}

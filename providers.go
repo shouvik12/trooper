@@ -560,7 +560,7 @@ func buildChain() []Provider {
 			URL:        getEnv("CLAUDE_URL", "https://api.anthropic.com/v1/messages"),
 			APIKey:     key,
 			AuthHeader: "x-api-key",
-			Model:      getEnv("CLAUDE_MODEL", "claude-3-5-haiku-20241022"),
+			Model:      getEnv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"),
 		})
 	}
 

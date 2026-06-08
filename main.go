@@ -52,8 +52,12 @@ func main() {
 	log.Printf("    Triggers : HTTP %v", quotaCodes)
 	store := NewSessionStore()
 	http.HandleFunc("/recovery/", recoveryHandler(store))
+	http.HandleFunc("/chat", chatHandler(store))
+	http.HandleFunc("/config", configHandler())
+
 	http.HandleFunc("/dashboard", dashboardIndexHandler(store))
 	http.HandleFunc("/sessions", sessionsHandler(store))
+	http.HandleFunc("/session/", sessionDetailHandler(store))
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	http.HandleFunc("/", makeHandler(chain, quotaCodes, active, store, states))
 	if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
@@ -65,7 +69,7 @@ func main() {
 
 func loadQuotaCodes() map[int]bool {
 	quotaCodes := map[int]bool{}
-	raw := getEnv("QUOTA_STATUS_CODES", "429,402,529,400")
+	raw := getEnv("QUOTA_STATUS_CODES", "429,402,529,400,404")
 	for _, s := range strings.Split(raw, ",") {
 		s = strings.TrimSpace(s)
 		if code, err := strconv.Atoi(s); err == nil {
@@ -93,6 +97,9 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 		json.Unmarshal(body, &reqMap)
 		wantsStream, _ := reqMap["stream"].(bool)
 		forceLocal, _ := reqMap["x_force_local"].(bool)
+		if r.Header.Get("X-Force-Local") == "true" {
+			forceLocal = true
+		}
 
 		// Session handling
 		sessionID := r.Header.Get("X-Session-ID")
