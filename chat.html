@@ -707,7 +707,10 @@ function escalate(btnEl, msgId) {
         body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: filtered })
       });
     })
-    .then(function(r){ return r.json(); })
+    .then(function(r){
+      window._escalateProvider = r.headers.get('X-Trooper-Provider') || 'claude';
+      return r.json();
+    })
     .then(function(data){
       hideThinking();
       var content = extractContent(data);
@@ -723,10 +726,11 @@ function escalate(btnEl, msgId) {
       var inner = document.getElementById('chatInner');
       var div = document.createElement('div');
       div.className = 'divider fadein';
-      div.innerHTML = '<div style="flex:1;height:1px;background:var(--border)"></div>escalated to Claude<div style="flex:1;height:1px;background:var(--border)"></div>';
+      var provLabel = (window._escalateProvider === 'ollama') ? 'local (fallback)' : 'Claude';
+      div.innerHTML = '<div style="flex:1;height:1px;background:var(--border)"></div>escalated to ' + provLabel + '<div style="flex:1;height:1px;background:var(--border)"></div>';
       inner.appendChild(div);
       // Claude response
-      var newId = appendBubble('assistant', content, 'claude', true);
+      var newId = appendBubble('assistant', content, window._escalateProvider || 'claude', true);
       // Replace actions with back to local
       setTimeout(function(){
         var acts = document.getElementById('act-' + newId);

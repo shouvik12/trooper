@@ -382,16 +382,18 @@ func (s *SessionStore) GetAll(sessionID string) []map[string]string {
 	var all []map[string]string
 	seen := make(map[string]bool)
 	for _, e := range state.entries {
+		// Skip SITREP injection messages — they leak into conversation history
+		if strings.HasPrefix(e.Content, "[STATE_SITREP") {
+			continue
+		}
 		key := e.Role + "||" + e.Content
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		content := e.Content
-		// Provider tags removed — causes model confusion when reading history
 		all = append(all, map[string]string{
 			"role":    e.Role,
-			"content": content,
+			"content": e.Content,
 		})
 	}
 	return all
