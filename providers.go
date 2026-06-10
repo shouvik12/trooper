@@ -359,7 +359,7 @@ func (s *SessionStore) GetTripleAnchor(sessionID string) []map[string]string {
 	payload := append([]map[string]string{}, state.Anchor...)
 	if state.SITREP != "" {
 		payload = append(payload, map[string]string{
-			"role":    "system",
+			"role":    "user",
 			"content": fmt.Sprintf("[STATE_SITREP: %s]", state.SITREP),
 		})
 	}

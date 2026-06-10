@@ -34,7 +34,7 @@ echo ""
 
 # ── Test 1: Simple turn goes directly to Ollama ───────────────────────────────
 echo "Test 1: Simple turn → Ollama directly"
-RESULT=$(curl -v -s -X POST $BASE_URL/ \
+RESULT=$(curl -v -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-1" \
   -d '{"messages": [{"role": "user", "content": "how many days in a week"}]}' 2>&1)
@@ -44,7 +44,7 @@ check "Tokens saved header present" "$RESULT" "X-Trooper-Session-Saved"
 # ── Test 2: Complex turn tries Claude first ───────────────────────────────────
 echo ""
 echo "Test 2: Complex turn → tries Claude first"
-RESULT=$(curl -v -s -X POST $BASE_URL/ \
+RESULT=$(curl -v -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-2" \
   -d '{"messages": [{"role": "user", "content": "explain why goroutines are better than threads"}]}' 2>&1)
@@ -53,7 +53,7 @@ check "Complex turn fallback decision" "$RESULT" "X-Trooper-Decision: ollama (fa
 # ── Test 3: Code detected → Claude ───────────────────────────────────────────
 echo ""
 echo "Test 3: Code detected → tries Claude first"
-RESULT=$(curl -v -s -X POST $BASE_URL/ \
+RESULT=$(curl -v -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-3" \
   -d '{"messages": [{"role": "user", "content": "fix this func main() { fmt.Println() }"}]}' 2>&1)
@@ -62,12 +62,12 @@ check "Code turn not routed as simple" "$RESULT" "X-Trooper-Decision: ollama (fa
 # ── Test 4: Context preserved across turns ────────────────────────────────────
 echo ""
 echo "Test 4: Context preserved across turns"
-curl -s -X POST $BASE_URL/ \
+curl -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-4" \
   -d '{"messages": [{"role": "user", "content": "my name is Souvik and I am building Trooper"}]}' > /dev/null
 
-RESULT=$(curl -s -X POST $BASE_URL/ \
+RESULT=$(curl -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-4" \
   -d '{"messages": [{"role": "user", "content": "what is my name"}]}')
@@ -79,12 +79,12 @@ check "Context carried across turns" "$RESULT" "Souvik"
 # ── Test 6: No context bleed between sessions ─────────────────────────────────
 echo ""
 echo "Test 6: No context bleed between sessions"
-curl -s -X POST $BASE_URL/ \
+curl -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-6a" \
   -d '{"messages": [{"role": "user", "content": "my secret word is banana"}]}' > /dev/null
 
-RESULT=$(curl -s -X POST $BASE_URL/ \
+RESULT=$(curl -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-6b" \
   -d '{"messages": [{"role": "user", "content": "what is my secret word"}]}')
@@ -100,14 +100,14 @@ fi
 # ── Test 7: X-Trooper-Summary header present ──────────────────────────────────
 echo ""
 echo "Test 7: X-Trooper-Summary header present"
-RESULT=$(curl -v -s -X POST $BASE_URL/ \
+RESULT=$(curl -v -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-7" \
   -d '{"messages": [{"role": "user", "content": "hello"}]}' 2>&1)
 check "X-Trooper-Summary header present" "$RESULT" "X-Trooper-Summary"
 
 echo "Test 8: Summarise keyword → Claude-first, fallback to Ollama (no credits)"
-RESULT=$(curl -v -s -X POST $BASE_URL/ \
+RESULT=$(curl -v -s -X POST $BASE_URL/v1/messages \
   -H "Content-Type: application/json" \
   -H "X-Session-ID: sanity-8" \
   -d '{"messages": [{"role": "user", "content": "summarise what we have covered"}]}' 2>&1)

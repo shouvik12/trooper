@@ -87,6 +87,11 @@ func makeHandler(chain []Provider, quotaCodes map[int]bool, active *ActiveProvid
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		// Ignore non-API requests — prevents Chrome DevTools noise from hitting provider chain
+		if !strings.HasPrefix(r.URL.Path, "/v1/") {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, `{"error":"failed to read request"}`, http.StatusBadRequest)
