@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -474,7 +475,30 @@ func configHandler() http.HandlerFunc {
 }
 func sessionDetailHandler(store *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		path := r.URL.Path
+
+		// POST /session/:id/append — write message to session
+		if strings.HasSuffix(path, "/append") && r.Method == http.MethodPost {
+			id := strings.TrimPrefix(path, "/session/")
+			id = strings.TrimSuffix(id, "/append")
+			log.Printf("📝 Appending to session: %s", id)
+
+			var msg map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if msg["role"] == "" || msg["content"] == "" {
+				http.Error(w, "missing role or content", http.StatusBadRequest)
+				return
+			}
+			store.Append(id, []map[string]string{msg})
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// GET /session/:id — return session messages
+		id := strings.TrimPrefix(path, "/session/")
 		if id == "" {
 			http.NotFound(w, r)
 			return
@@ -482,5 +506,22 @@ func sessionDetailHandler(store *SessionStore) http.HandlerFunc {
 		msgs := store.GetAll(id)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(msgs)
+	}
+}
+func sessionAppendHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		id = strings.TrimSuffix(id, "/append")
+		var msg map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if msg["role"] == "" || msg["content"] == "" {
+			http.Error(w, "missing role or content", http.StatusBadRequest)
+			return
+		}
+		store.Append(id, []map[string]string{msg})
+		w.WriteHeader(http.StatusOK)
 	}
 }

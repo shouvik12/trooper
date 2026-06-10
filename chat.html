@@ -711,6 +711,12 @@ function escalate(btnEl, msgId) {
     .then(function(data){
       hideThinking();
       var content = extractContent(data);
+      // Write Claude's response back to Trooper session store so Llama can see it
+      fetch('/session/' + currentSession + '/append', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({role: 'assistant', content: content})
+      }).catch(function(){});
       // Stay on Claude
       setRoute('cloud');
       // Divider
@@ -726,7 +732,8 @@ function escalate(btnEl, msgId) {
         var acts = document.getElementById('act-' + newId);
         if (acts) acts.innerHTML =
           '<button class="act-btn act-local" onclick="backToLocal(this, \'' + newId + '\')">&#x21A9; Back to local</button>' +
-          '<button class="act-btn act-accept" onclick="accept(this, \'' + newId + '\')">&#x2713; Accept</button>';
+          '<button class="act-btn act-accept" onclick="accept(this, \'' + newId + '\')">&#x2713; Accept</button>' +
+          '<button class="copy-btn" onclick="copyBubble(this, \'' + newId + '\')">&#x2398; copy</button>';
       }, 50);
     })
     .catch(function(err){
@@ -780,7 +787,9 @@ function appendBubble(role, text, provider, animate) {
 
   var actions = isUser ? '' :
     '<div class="actions" id="act-' + id + '">' +
-    '<button class="act-btn act-escalate" onclick="escalate(this,\'' + id + '\')">&#x2191; Escalate</button>' +
+    (provider === 'claude'
+      ? '<button class="act-btn act-local" onclick="backToLocal(this,\'' + id + '\')">&#x21A9; Back to local</button>'
+      : '<button class="act-btn act-escalate" onclick="escalate(this,\'' + id + '\')">&#x2191; Escalate</button>') +
     '<button class="act-btn act-accept" onclick="accept(this,\'' + id + '\')">&#x2713; Good</button>' +
     '<button class="copy-btn" onclick="copyBubble(this,\'' + id + '\')">&#x2398; copy</button>' +
     '</div>';
