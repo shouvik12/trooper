@@ -422,7 +422,7 @@ textarea:focus, input:focus { outline: none; }
       <div class="sp-section">
         <div class="sp-label">SITREP</div>
         <div class="sp-field"><div class="sp-key">Intent</div><div class="sp-val intent" id="sp-intent">-</div></div>
-        <div class="sp-field"><div class="sp-key">Stage</div><div class="sp-val" id="sp-stage">-</div></div>
+        <div class="sp-field"><div class="sp-key">Entities</div><div class="sp-val" id="sp-stage">-</div></div>
         <div class="sp-field"><div class="sp-key">Confidence</div><div class="sp-val green" id="sp-conf">-</div></div>
       </div>
       <div class="sp-section sp-overflow">
@@ -477,32 +477,27 @@ function loadConfig() {
 
 function pollSitrep() {
   if (!currentSession) return;
-  fetch('/dashboard?session=' + currentSession)
-    .then(function(r){ return r.text(); })
-    .then(function(html){
-      var parser = new DOMParser();
-      var doc = parser.parseFromString(html, 'text/html');
+  fetch('/sitrep/' + currentSession)
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if (!data) return;
 
-      // Intent
-      var intentEl = doc.querySelector('.sitrep-intent, [class*="intent"]');
-      if (intentEl) {
-        var intentText = intentEl.textContent.trim();
-        if (intentText) document.getElementById('sp-intent').textContent = intentText;
+      if (data.intent) document.getElementById('sp-intent').textContent = data.intent;
+
+      if (data.confidence) document.getElementById('sp-conf').textContent = data.confidence;
+
+      if (data.entities && data.entities.length > 0) {
+        document.getElementById('sp-stage').textContent = data.entities.slice(0, 3).join(', ');
       }
 
-      // Stage
-      var stageEl = doc.querySelector('.sitrep-stage');
-      if (stageEl) document.getElementById('sp-stage').textContent = stageEl.textContent.trim();
-
-      // Open loops
-      var loops = doc.querySelectorAll('.loop.open .loop-text, .loop-text.open');
-      if (loops.length > 0) {
+      if (data.openLoops && data.openLoops.length > 0) {
         var loopsHtml = '';
-        loops.forEach(function(l) {
-          var text = l.textContent.trim();
-          if (text) loopsHtml += '<div class="loop-item"><div class="loop-dot open"></div>' + escHtml(text) + '</div>';
+        data.openLoops.slice(0, 4).forEach(function(l) {
+          if (l && l.trim()) {
+            loopsHtml += '<div class="loop-item"><div class="loop-dot open"></div>' + escHtml(l.trim()) + '</div>';
+          }
         });
-        document.getElementById('sp-loops').innerHTML = loopsHtml || '<div class="loop-item"><div class="loop-dot open"></div>-</div>';
+        if (loopsHtml) document.getElementById('sp-loops').innerHTML = loopsHtml;
       }
     })
     .catch(function(){});
@@ -624,6 +619,7 @@ function startChatFromHome() {
 
 function startChat(text) {
   if (!currentSession) currentSession = 'session-' + Date.now();
+  setRoute('local');
   showView('chat');
   setTimeout(function(){ sendMessageWithText(text); }, 100);
 }
@@ -738,7 +734,8 @@ function escalate(btnEl, msgId) {
           '<button class="act-btn act-local" onclick="backToLocal(this, \'' + newId + '\')">&#x21A9; Back to local</button>' +
           '<button class="act-btn act-accept" onclick="accept(this, \'' + newId + '\')">&#x2713; Accept</button>' +
           '<button class="copy-btn" onclick="copyBubble(this, \'' + newId + '\')">&#x2398; copy</button>';
-      }, 50);
+      }, 200);
+      setTimeout(pollSitrep, 2000);
     })
     .catch(function(err){
       hideThinking();
@@ -849,7 +846,7 @@ function extractContent(data) {
 
 function scrollBottom() {
   var m = document.getElementById('chatMessages');
-  if (m) setTimeout(function(){ m.scrollTop = m.scrollHeight; }, 50);
+  if (m) setTimeout(function(){ m.scrollTop = m.scrollHeight; }, 200);
 }
 
 function autoResize(el) {

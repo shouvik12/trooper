@@ -539,18 +539,20 @@ func sitrepHandler(store *SessionStore) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		store.mu.RLock()
-		state, ok := store.sessions[id]
-		store.mu.RUnlock()
-		if !ok {
+		messages := store.GetAll(id)
+		if len(messages) == 0 {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"raw": ""})
+			json.NewEncoder(w).Encode(map[string]interface{}{})
 			return
 		}
-		state.mu.Lock()
-		sitrep := state.SITREP
-		state.mu.Unlock()
+		sitrep := buildSITREP(messages, extractLatestUserMessage2(messages))
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"raw": sitrep})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"intent":     sitrep.Intent,
+			"confidence": fmt.Sprintf("%.0f%%", sitrep.Confidence*100),
+			"entities":   sitrep.Entities,
+			"openLoops":  sitrep.OpenLoops,
+			"resolved":   sitrep.ResolvedLoops,
+		})
 	}
 }
