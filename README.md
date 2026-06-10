@@ -59,6 +59,7 @@ Claude: Common reasons your Postgres query is slow despite a user_id index:
         Run EXPLAIN ANALYZE to see which step is slow.
 
 [↩ Back to local]
+```
 
 ![Trooper Escalate to Claude](assets/escalate.png)
 
