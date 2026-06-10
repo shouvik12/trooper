@@ -370,7 +370,6 @@ func (s *SessionStore) GetTripleAnchor(sessionID string) []map[string]string {
 	return payload
 }
 
-// GetAll returns all messages flat for a session
 func (s *SessionStore) GetAll(sessionID string) []map[string]string {
 	s.mu.RLock()
 	state, ok := s.sessions[sessionID]
@@ -378,14 +377,31 @@ func (s *SessionStore) GetAll(sessionID string) []map[string]string {
 	if !ok {
 		return nil
 	}
-
 	state.mu.Lock()
 	defer state.mu.Unlock()
-
 	var all []map[string]string
-	all = append(all, state.Anchor...)
-	all = append(all, state.Tail...)
+	seen := make(map[string]bool)
+	for _, e := range state.entries {
+		key := e.Role + "||" + e.Content
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		content := e.Content
+		// Provider tags removed — causes model confusion when reading history
+		all = append(all, map[string]string{
+			"role":    e.Role,
+			"content": content,
+		})
+	}
 	return all
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GetTokensSaved returns cumulative tokens saved for a session

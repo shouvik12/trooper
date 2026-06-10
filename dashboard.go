@@ -482,7 +482,6 @@ func sessionDetailHandler(store *SessionStore) http.HandlerFunc {
 			id := strings.TrimPrefix(path, "/session/")
 			id = strings.TrimSuffix(id, "/append")
 			log.Printf("📝 Appending to session: %s", id)
-
 			var msg map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -492,11 +491,19 @@ func sessionDetailHandler(store *SessionStore) http.HandlerFunc {
 				http.Error(w, "missing role or content", http.StatusBadRequest)
 				return
 			}
-			store.Append(id, []map[string]string{msg})
+			provider := msg["provider"]
+			if provider == "" {
+				provider = "claude"
+			}
+			store.AppendWithMeta(id, []MessageEntry{{
+				Role:     msg["role"],
+				Content:  msg["content"],
+				Provider: provider,
+				At:       time.Now(),
+			}})
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
 		// GET /session/:id — return session messages
 		id := strings.TrimPrefix(path, "/session/")
 		if id == "" {
@@ -523,5 +530,27 @@ func sessionAppendHandler(store *SessionStore) http.HandlerFunc {
 		}
 		store.Append(id, []map[string]string{msg})
 		w.WriteHeader(http.StatusOK)
+	}
+}
+func sitrepHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/sitrep/")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		store.mu.RLock()
+		state, ok := store.sessions[id]
+		store.mu.RUnlock()
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"raw": ""})
+			return
+		}
+		state.mu.Lock()
+		sitrep := state.SITREP
+		state.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"raw": sitrep})
 	}
 }

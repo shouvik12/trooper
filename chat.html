@@ -715,7 +715,7 @@ function escalate(btnEl, msgId) {
       fetch('/session/' + currentSession + '/append', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({role: 'assistant', content: content})
+        body: JSON.stringify({role: 'assistant', content: content, provider: 'claude'})
       }).catch(function(){});
       // Stay on Claude
       setRoute('cloud');

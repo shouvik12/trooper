@@ -54,7 +54,7 @@ func main() {
 	http.HandleFunc("/recovery/", recoveryHandler(store))
 	http.HandleFunc("/chat", chatHandler(store))
 	http.HandleFunc("/config", configHandler())
-
+	http.HandleFunc("/sitrep/", sitrepHandler(store))
 	http.HandleFunc("/dashboard", dashboardIndexHandler(store))
 	http.HandleFunc("/sessions", sessionsHandler(store))
 	http.HandleFunc("/session/", sessionDetailHandler(store))
